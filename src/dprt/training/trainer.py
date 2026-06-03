@@ -186,10 +186,12 @@ class CentralizedTrainer():
 
     def _eval_class_names(self) -> List[str]:
         categories = self.config.get('data', {}).get('categories', {})
+        min_class_idx = 1 if self.config.get('task') == '2d_detection' else 0
         return [
             name
             for name, idx in sorted(
-                ((name, idx) for name, idx in categories.items() if isinstance(idx, int) and idx >= 0),
+                ((name, idx) for name, idx in categories.items()
+                 if isinstance(idx, int) and idx >= min_class_idx),
                 key=lambda item: item[1]
             )
         ]
