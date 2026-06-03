@@ -1,94 +1,75 @@
 {
-    "dataset": "kradar",
-
+    "dataset": "lh_pairs",
+    "task": "2d_detection",
     "computing": {
         "dtype": "float32",
         "seed": 42,
-        "workers": 16,
+        "workers": 4,
         "device": "cuda:0"
     },
-
     "data": {
-        "revision": "",
+        "manifest": "/mnt/disk1/zhangzhibin/dataset/LH_pairs_dataset/scan_manifest.json",
+        "homography": "/mnt/disk1/zhangzhibin/draw/H.npy",
         "image_size": 512,
-        // 新增红外
-        "ir_image": 512,
-        "lidar": 1,
-        "lidar_dropout": 0.0,
+        "max_time_diff": 0.25,
+        "val_ratio": 0.2,
         "num_classes": 8,
-        "subset": null,
         "categories": {
-            "Sedan": 0,
-            "Bus or Truck": 1,
-            "Motorcycle": 2,
-            "Bicycle": 3,
-            "Bicycle Group": 4,
-            "Pedestrian": 5,
-            "Pedestrian Group": 6,
-            "Background": -1
+            "Background": 0,
+            "Bridge": 1,
+            "Building complex": 2,
+            "Chimney": 3,
+            "Power line": 4,
+            "Power tower": 5,
+            "Signal tower": 6,
+            "Tall building": 7
         },
-        "fov": {
-            "x": [
-                0.0,
-                72.0
-            ],
-            "y": [
-                -6.4,
-                6.4
-            ],
-            "z": [
-                -2.0,
-                6.0
-            ],
-            "azimuth": [
-                -50,
-                50
-            ]
-        }
+        "label_aliases": {
+            "building complex": "Building complex"
+        },
+        "subset": null
     },
-
     "train": {
-        "batch_size": 16,
+        "batch_size": 4,
         "shuffle": true,
-        "epochs": 280,
+        "epochs": 200,
         "logging": "epoch",
+        "criterion": "TwoDSetCriterion",
+        "class_weight": 1.0,
+        "bbox_weight": 5.0,
+        "giou_weight": 2.0,
+        "eos_coef": 0.1,
+        "cost_class": 1.0,
+        "cost_bbox": 5.0,
+        "cost_giou": 2.0,
         "optimizer": {
             "name": "AdamW",
             "lr": 0.0001,
-            "weight_decay": 0.01
-        },
-        "anassigner": "HungarianAnassigner",
-        "criterion": "BalancedGroupSetCriterion",
-        "background_weight": 0.1,
-        "others_sample_ratio": 4,
-        "loss_weights": {
-            "objectness": 1.0,
-            "bags_class": 1.0,
-            "center": 1.0,
-            "size": 1.0,
-            "angle": 1.0
+            "weight_decay": 0.0001
         },
         "scheduler": {
             "name": "CosineAnnealingLR",
-            "T_max": 80,
-            "eta_min": 0.000001
+            "T_max": 200,
+            "eta_min": 1e-06
         }
     },
-
     "model": {
-        "name": "dprt",
+        "name": "rgb_ir_query_detector",
         "inputs": [
             "camera_mono",
-            "radar_bev",
-            "radar_front",
-            "lidar_bev"
+            "ir_image"
         ],
-        "skiplinks": {
-            "camera_mono": true,
-            "radar_bev": true,
-            "radar_front": true,
-            "lidar_bev": true
-        },
+        "d_model": 256,
+        "num_queries": 400,
+        "feature_levels": [
+            "2",
+            "3",
+            "4"
+        ],
+        "n_heads": 8,
+        "n_points": 4,
+        "dropout": 0.1,
+        "imagenet_normalize": true,
         "backbones": {
             "camera_mono": {
                 "name": "ResNet101",
@@ -97,214 +78,51 @@
                 "norm_layer": "BatchNorm2d",
                 "channel_last": true
             },
-            "radar_bev": {
-                "name": "ResNet50",
+            "ir_image": {
+                "name": "ResNet101",
                 "weights": "IMAGENET1K_V2",
-                "in_channels": 6,
                 "multi_scale": 4,
                 "norm_layer": "BatchNorm2d",
                 "channel_last": true
-            },
-            "radar_front": {
-                "name": "ResNet50",
-                "weights": "IMAGENET1K_V2",
-                "in_channels": 6,
-                "multi_scale": 4,
-                "norm_layer": "BatchNorm2d",
-                "channel_last": true
-            },
-            "lidar_bev": {
-                "name": "ResNet50",
-                "weights": "IMAGENET1K_V2",
-                "in_channels": 3,
-                "multi_scale": 4,
-                "norm_layer": "BatchNorm2d",
-                "channel_last": false
             }
         },
         "confidence": {
-          "enabled": false,
-          "camera_mono": {
-            "type": "camera",
-            "checkpoint": "/mnt/disk1/yangqilin/dpft/model/carmera_confidence_selector/confidence/20251224-154837-429_checkpoint_0100.pt",
-            "selector": "/mnt/disk1/yangqilin/dpft/model/carmera_confidence_selector/selector/20251224-154837-429_checkpoint_0060.pt"
-          },
-          "radar_bev": {
-            "type": "radar",
-            "checkpoint": "/mnt/disk1/yangqilin/dpft/model/radar_bev_confidence_selector/confidence/20251224-154905-039_checkpoint_0100.pt",
-            "selector": "/mnt/disk1/yangqilin/dpft/model/radar_bev_confidence_selector/selector/20251224-154905-039_checkpoint_0060.pt"
-          },
-          "radar_front": {
-            "type": "radar",
-            "checkpoint": "/mnt/disk1/yangqilin/dpft/model/radar_front_confidence_selector/confidence/20251224-154928-915_checkpoint_0100.pt",
-            "selector": "/mnt/disk1/yangqilin/dpft/model/radar_front_confidence_selector/selector/20251224-154928-915_checkpoint_0060.pt"
-          },
-          "lidar_bev": {
-            "type": "lidar",
-            "checkpoint": "/mnt/disk1/yangqilin/dpft/model/lidar_confidence_selector/confidence/20251224-155049-147_checkpoint_0100.pt",
-            "selector": "/mnt/disk1/yangqilin/dpft/model/lidar_confidence_selector/selector/20251224-155049-147_checkpoint_0060.pt"
-          }
+            "enabled": false
         },
-
         "necks": {
             "camera_mono": {
                 "name": "FPN",
                 "in_channels_list": [
-                    3,
                     256,
                     512,
                     1024,
                     2048
                 ],
-                "out_channels":16
+                "out_channels": 256
             },
-            "radar_bev": {
+            "ir_image": {
                 "name": "FPN",
                 "in_channels_list": [
-                    6,
                     256,
                     512,
                     1024,
                     2048
                 ],
-                "out_channels": 16
-            },
-            "radar_front": {
-                "name": "FPN",
-                "in_channels_list": [
-                    6,
-                    256,
-                    512,
-                    1024,
-                    2048
-                ],
-                "out_channels": 16
-            },
-            "lidar_bev": {
-                "name": "FPN",
-                "in_channels_list": [
-                    3,
-                    256,
-                    512,
-                    1024,
-                    2048
-                ],
-                "out_channels": 16,
-                "channel_last": false
+                "out_channels": 256
             }
-        },
-        "embeddings": {
-            "camera_mono": {
-                "name": "sinusoidal_embedding",
-                "num_feats": 16,
-                "n_levels": 5,
-                "normalize": true
-            },
-            "radar_bev": {
-                "name": "sinusoidal_embedding",
-                "num_feats": 16,
-                "n_levels": 5,
-                "normalize": true
-            },
-            "radar_front": {
-                "name": "sinusoidal_embedding",
-                "num_feats": 16,
-                "n_levels": 5,
-                "normalize": true
-            },
-            "lidar_bev": {
-                "name": "sinusoidal_embedding",
-                "num_feats": 16,
-                "n_levels": 5,
-                "normalize": true
-            }
-        },
-        "querent": {
-            "name": "data_agnostic_static_querent",
-            "transformation": "spher2cart",
-            "resolution": [
-                20,
-                20,
-                1
-            ],
-            "minimum": [
-                4,
-                -50,
-                0
-            ],
-            "maximum": [
-                72,
-                50,
-                0
-            ]
-        },
-        "fuser": {
-            "name": "basefusion",
-            "i_iter": 3,
-            "m_views": 4,
-            "d_model":16,
-            "d_ffn": 32,
-            "n_queries": 400,
-            "n_levels": [
-                5,
-                5,
-                5,
-                5
-            ],
-            "n_heads": [
-                1,
-                1,
-                1,
-                1
-            ],
-            "n_points": [
-                1,
-                1,
-                1,
-                1
-            ],
-            "norm": true,
-            "dropout": 0.2,
-            "reduction": "weighted",
-            "activation": "Mish"
         },
         "head": {
-            "name": "bags_linear_detection_head",
-            "in_channels": 16,
-            "num_classes": 8,
-            "num_reg_layers": 3,
-            "num_cls_layers": 3,
-            "bags": {
-                "groups": [
-                    [3, 4, 5, 7],
-                    [2, 6],
-                    [1]
-                ],
-                "background_weight": 0.1,
-                "others_sample_ratio": 4
-            }
-        },
-        "language_model": {
-            "name": "qwen3_vl_8b",
-            "model_id": "Qwen/Qwen3-VL-8B-Instruct",
-            "cache_dir": "/mnt/disk1/yangqilin/dpft/VLM/QWen/",
-            "enabled": true,
-            "mode": "passthrough",
-            "load_model": true,
-            "reasoning_enabled": false,
-            "attach_metadata": false
+            "num_classes": 8
         }
     },
-
     "evaluate": {
-            "logging": "epoch",
-            "enable_visualization": true,
-            "metrics": {
-                "mAP": "mAP3D",
-                "mGIoU": "mGIoU3D"
-            },
-            "exporter": {
-                "name": "kradar"
+        "logging": "epoch",
+        "metrics": {
+            "mAP": {
+                "name": "mAP2D",
+                "threshold": 0.5,
+                "score_threshold": 0.05
             }
         }
+    }
 }

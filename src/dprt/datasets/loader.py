@@ -49,10 +49,12 @@ def apply_subset(dataset: Dataset, config: Dict[str, Any]) -> Dataset:
 
 def load_listed(dataset: Dataset, config: Dict[str, Any]) -> DataLoader:
     dataset = apply_subset(dataset, config)
+    split = getattr(dataset, 'split', None)
+    shuffle = bool(config['train']['shuffle']) if split in {None, 'train'} else False
     return DataLoader(
         dataset=dataset,
         batch_size=config['train']['batch_size'],
-        shuffle=config['train']['shuffle'],
+        shuffle=shuffle,
         num_workers=config['computing']['workers'],
         collate_fn=listed_collating
     )

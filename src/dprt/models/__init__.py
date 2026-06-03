@@ -6,11 +6,14 @@ import torch
 
 from dprt.models.dprt import build_dprt
 from dprt.models.dprt import DPRT   # 按你的项目实际导入路径改
+from dprt.models.detectors import build_rgb_ir_query_detector
 import json
 
 def build(model: str, *args, **kwargs):
     if model == 'dprt':
         return build_dprt(*args, **kwargs)
+    if model == 'rgb_ir_query_detector':
+        return build_rgb_ir_query_detector(*args, **kwargs)
 
 
 # def load_model(checkpoint: str, config_path: str, device="cpu") -> Tuple[torch.nn.Module, int, str]:

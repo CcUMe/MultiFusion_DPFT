@@ -61,11 +61,11 @@ def main(src: str, cfg: str, dst: str, checkpoint: str = None):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser('DPRT data preprocessing')
-    parser.add_argument('--src', type=str, default='/mnt/disk1/xiaxue/datasets/kradar_processed2',
+    parser.add_argument('--src', type=str, default='/mnt/disk1/zhangzhibin/dataset/LH_pairs_dataset',
                         help="Path to the processed dataset folder.")
-    parser.add_argument('--cfg', type=str, default='/mnt/disk1/xiaxue/code/new/dpft_v4/config/kradar.json',
+    parser.add_argument('--cfg', type=str, default='/mnt/disk1/zhangzhibin/dpft_v4/config/la-tom_all_modal.json',
                         help="Path to the configuration file.")
-    parser.add_argument('--dst', type=str, default='/mnt/disk1/xiaxue/code/DPFT-main/DPFT-main/log',
+    parser.add_argument('--dst', type=str, default='/mnt/disk1/zhangzhibin/test/2D',
                         help="Path to save the training log.")
     parser.add_argument('--checkpoint', type=str,default=None,
                         help="Path to a model checkpoint to resume training from.")

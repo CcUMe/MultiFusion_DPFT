@@ -5,6 +5,9 @@ from typing import Any, Dict, List, Tuple
 import torch
 import torch.nn.functional as F
 
+from scipy.optimize import linear_sum_assignment
+from torchvision.ops import generalized_box_iou
+
 from torch import nn
 from torch.utils.data import default_collate
 
@@ -758,16 +761,20 @@ class Loss(nn.modules.loss._Loss):
             input = {k: v.unsqueeze(0) for k, v in input.items()}
             target = {k: v.unsqueeze(0) for k, v in target.items()}
 
-            if self.anassigner is not None:
-                # Get assignment
-                if not all([t.numel() for t in target.values()]):
-                    i = torch.zeros((1, 0), dtype=torch.long, device=device)
-                    j = torch.zeros((1, 0), dtype=torch.long, device=device)
-                else:
-                    i, j = self.anassigner(input, target)
+            if self.criterion is not None:
+                if self.anassigner is not None:
+                    # Get assignment
+                    if not all([t.numel() for t in target.values()]):
+                        i = torch.zeros((1, 0), dtype=torch.long, device=device)
+                        j = torch.zeros((1, 0), dtype=torch.long, device=device)
+                    else:
+                        i, j = self.anassigner(input, target)
 
-                # Apply loss criterion
-                losses = self.criterion(input, target, indices=(i, j))
+                    # Apply loss criterion with external assignment
+                    losses = self.criterion(input, target, indices=(i, j))
+                else:
+                    # Criterion performs its own matching, e.g. 2D DETR-style Hungarian loss.
+                    losses = self.criterion(input, target)
 
             else:
                 # Get loss values
@@ -803,6 +810,121 @@ class Loss(nn.modules.loss._Loss):
         total_loss = torch.stack(tuple(batch_losses.values())).sum(dim=-1)
 
         return total_loss, batch_losses
+
+
+
+def cxcywh_to_xyxy_2d(boxes: torch.Tensor) -> torch.Tensor:
+    cx, cy, w, h = boxes.unbind(-1)
+    half_w = w * 0.5
+    half_h = h * 0.5
+    return torch.stack((cx - half_w, cy - half_h, cx + half_w, cy + half_h), dim=-1)
+
+
+class TwoDSetCriterion(nn.Module):
+    allow_empty_targets = True
+
+    def __init__(self,
+                 num_classes: int,
+                 class_weight: float = 1.0,
+                 bbox_weight: float = 5.0,
+                 giou_weight: float = 2.0,
+                 eos_coef: float = 0.1,
+                 cost_class: float = 1.0,
+                 cost_bbox: float = 5.0,
+                 cost_giou: float = 2.0,
+                 **kwargs):
+        super().__init__()
+        self.num_classes = num_classes
+        self.class_weight = class_weight
+        self.bbox_weight = bbox_weight
+        self.giou_weight = giou_weight
+        self.cost_class = cost_class
+        self.cost_bbox = cost_bbox
+        self.cost_giou = cost_giou
+        empty_weight = torch.ones(num_classes)
+        empty_weight[0] = eos_coef
+        self.register_buffer('empty_weight', empty_weight)
+
+    @classmethod
+    def from_config(cls, config: Dict[str, Any]) -> TwoDSetCriterion:
+        train_config = config.get('train', {})
+        model_config = config.get('model', {})
+        head_config = model_config.get('head', {})
+        data_config = config.get('data', {})
+        num_classes = head_config.get('num_classes', model_config.get('num_classes'))
+        if num_classes is None:
+            categories = data_config.get('categories', {})
+            valid_ids = [int(idx) for idx in categories.values() if isinstance(idx, int) and idx >= 0]
+            num_classes = max(valid_ids) + 1 if valid_ids else data_config.get('num_classes', 2)
+        return cls(
+            num_classes=num_classes,
+            class_weight=train_config.get('class_weight', 1.0),
+            bbox_weight=train_config.get('bbox_weight', 5.0),
+            giou_weight=train_config.get('giou_weight', 2.0),
+            eos_coef=train_config.get('eos_coef', 0.1),
+            cost_class=train_config.get('cost_class', 1.0),
+            cost_bbox=train_config.get('cost_bbox', 5.0),
+            cost_giou=train_config.get('cost_giou', 2.0),
+        )
+
+    @torch.no_grad()
+    def _match(self, logits: torch.Tensor, boxes: torch.Tensor, targets: Dict[str, torch.Tensor]):
+        labels = targets['labels'][0]
+        target_boxes = targets['boxes_cxcywh'][0]
+        if labels.numel() == 0:
+            empty = torch.zeros((0,), dtype=torch.long, device=logits.device)
+            return empty, empty
+
+        prob = logits[0].softmax(-1)
+        out_boxes = boxes[0]
+        cost_class = -prob[:, labels]
+        cost_bbox = torch.cdist(out_boxes, target_boxes, p=1)
+        cost_giou = -generalized_box_iou(
+            cxcywh_to_xyxy_2d(out_boxes),
+            cxcywh_to_xyxy_2d(target_boxes),
+        )
+        cost = self.cost_class * cost_class + self.cost_bbox * cost_bbox + self.cost_giou * cost_giou
+        row_ind, col_ind = linear_sum_assignment(cost.detach().cpu())
+        return (
+            torch.as_tensor(row_ind, dtype=torch.long, device=logits.device),
+            torch.as_tensor(col_ind, dtype=torch.long, device=logits.device),
+        )
+
+    def forward(self, inputs: Dict[str, torch.Tensor], targets: Dict[str, torch.Tensor], indices=None):
+        logits = inputs['class_logits']
+        boxes = inputs['boxes']
+        target_classes = torch.zeros(logits.shape[:2], dtype=torch.long, device=logits.device)
+        src_idx, tgt_idx = self._match(logits, boxes, targets)
+
+        labels = targets['labels'][0]
+        target_boxes = targets['boxes_cxcywh'][0]
+        if src_idx.numel() > 0:
+            target_classes[0, src_idx] = labels[tgt_idx]
+
+        class_weight = self.empty_weight.to(device=logits.device, dtype=logits.dtype)
+        loss_class = F.cross_entropy(logits.transpose(1, 2), target_classes, class_weight)
+
+        if src_idx.numel() == 0:
+            zero = boxes.sum() * 0.0
+            return {
+                'class': loss_class * self.class_weight,
+                'bbox': zero,
+                'giou': zero,
+            }
+
+        src_boxes = boxes[0, src_idx]
+        matched_boxes = target_boxes[tgt_idx]
+        loss_bbox = F.l1_loss(src_boxes, matched_boxes, reduction='none').sum() / src_idx.numel()
+        giou = torch.diag(generalized_box_iou(
+            cxcywh_to_xyxy_2d(src_boxes),
+            cxcywh_to_xyxy_2d(matched_boxes),
+        ))
+        loss_giou = (1.0 - giou).sum() / src_idx.numel()
+        return {
+            'class': loss_class * self.class_weight,
+            'bbox': loss_bbox * self.bbox_weight,
+            'giou': loss_giou * self.giou_weight,
+        }
 
 
 def _get_loss(name: str, config: Dict[str, Any] = None) -> nn.modules.loss._Loss:

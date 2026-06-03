@@ -492,8 +492,9 @@ class CentralizedTrainer():
 
     def train(self, model: torch.nn.Module, data_loader: Iterable, val_loader: Iterable = None,
               start_epoch: int = 0, timestamp: str = None, dst: str = None) -> None:
-        # Load model (to device)
+        # Load model and loss function (to device)
         model.to(self.device)
+        self.loss_fn.to(self.device)
 
         # Get current timestamp
         if timestamp is None:

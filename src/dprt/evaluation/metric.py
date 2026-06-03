@@ -5,6 +5,7 @@ from typing import Any, Dict, List, Optional
 import torch
 
 from torch import nn
+from torchvision.ops import box_iou
 from dprt.utils.iou import iou3d, giou3d
 from dprt.utils.bbox import get_box_corners
 from dprt.utils.data import decollate_batch
@@ -617,6 +618,133 @@ class WeakBEVMetric(nn.modules.loss._Loss):
             results[f'Precision_{name}'] = tp_counts[class_idx] / torch.clamp(pred_counts[class_idx], min=1.0)
 
         return results
+
+
+
+class mAP2D(nn.modules.loss._Loss):
+    def __init__(self, threshold: float = 0.5, nelem: int = 101, score_threshold: float = 0.05,
+                 class_names: Optional[List[str]] = None, **kwargs):
+        super().__init__()
+        self.threshold = threshold
+        self.nelem = nelem
+        self.score_threshold = score_threshold
+        self.class_names = class_names if class_names is not None else []
+
+    def _class_name(self, class_idx: int) -> str:
+        if 0 <= class_idx < len(self.class_names):
+            return self.class_names[class_idx]
+        return f'class_{class_idx}'
+
+    def _average_precision(self, tp: torch.Tensor, fp: torch.Tensor, npos: int) -> torch.Tensor:
+        tp = torch.cumsum(tp, dim=0)
+        fp = torch.cumsum(fp, dim=0)
+        precision = tp / torch.clamp(tp + fp, min=1.0)
+        recall = tp / float(max(npos, 1))
+        rec_interp = torch.linspace(0, 1, self.nelem, dtype=recall.dtype, device=recall.device)
+        prec_interp = interp(rec_interp, recall, precision, right=0)
+        return prec_interp.mean()
+
+    def compute_dataset(self, inputs: List[Dict[str, torch.Tensor]],
+                        targets: List[Dict[str, torch.Tensor]]) -> Dict[str, torch.Tensor]:
+        if not inputs:
+            return {'mAP': torch.ones((), dtype=torch.float)}
+        device = inputs[0]['class_logits'].device
+        num_classes = inputs[0]['class_logits'].shape[-1]
+        gt_counts = torch.zeros((num_classes,), dtype=torch.float, device=device)
+        pred_counts = torch.zeros((num_classes,), dtype=torch.float, device=device)
+        tp_counts = torch.zeros((num_classes,), dtype=torch.float, device=device)
+        fp_counts = torch.zeros((num_classes,), dtype=torch.float, device=device)
+        aps = torch.zeros((num_classes,), dtype=torch.float, device=device)
+        per_sample = []
+        for input, target in zip(inputs, targets):
+            probs = torch.softmax(input['class_logits'], dim=-1)
+            pred_scores, pred_labels = probs[:, 1:].max(dim=-1)
+            pred_labels = pred_labels + 1
+            pred_boxes = input.get('boxes_xyxy')
+            if pred_boxes is None:
+                pred_boxes = cxcywh_to_xyxy_metric(input['boxes'])
+            keep = pred_scores >= self.score_threshold
+            labels = target['labels']
+            boxes = target['boxes']
+            if labels.numel():
+                gt_counts += torch.bincount(labels, minlength=num_classes).to(dtype=torch.float)
+            if keep.any():
+                pred_counts += torch.bincount(pred_labels[keep], minlength=num_classes).to(dtype=torch.float)
+            per_sample.append({
+                'pred_scores': pred_scores[keep],
+                'pred_labels': pred_labels[keep],
+                'pred_boxes': pred_boxes[keep],
+                'gt_labels': labels,
+                'gt_boxes': boxes,
+            })
+        present_classes = []
+        for class_idx in range(1, num_classes):
+            npos = int(gt_counts[class_idx].item())
+            if npos == 0:
+                continue
+            present_classes.append(class_idx)
+            detections = []
+            gt_by_sample = []
+            for sample_idx, sample in enumerate(per_sample):
+                gt_mask = sample['gt_labels'] == class_idx
+                gt_boxes = sample['gt_boxes'][gt_mask]
+                gt_by_sample.append({
+                    'boxes': gt_boxes,
+                    'matched': torch.zeros((gt_boxes.shape[0],), dtype=torch.bool, device=device),
+                })
+                pred_mask = sample['pred_labels'] == class_idx
+                for pred_idx in torch.nonzero(pred_mask, as_tuple=False).flatten():
+                    detections.append((sample['pred_scores'][pred_idx], sample_idx, sample['pred_boxes'][pred_idx]))
+            if not detections:
+                continue
+            detections.sort(key=lambda item: float(item[0]), reverse=True)
+            tp = torch.zeros((len(detections),), dtype=torch.float, device=device)
+            fp = torch.ones((len(detections),), dtype=torch.float, device=device)
+            for det_idx, (_, sample_idx, pred_box) in enumerate(detections):
+                gt_entry = gt_by_sample[sample_idx]
+                gt_boxes = gt_entry['boxes']
+                if gt_boxes.numel() == 0 or gt_entry['matched'].all():
+                    continue
+                ious = box_iou(pred_box.unsqueeze(0), gt_boxes).reshape(-1)
+                ious[gt_entry['matched']] = -1
+                best_iou, best_idx = torch.max(ious, dim=0)
+                if best_iou >= self.threshold:
+                    gt_entry['matched'][best_idx] = True
+                    tp[det_idx] = 1
+                    fp[det_idx] = 0
+            aps[class_idx] = self._average_precision(tp, fp, npos)
+            tp_counts[class_idx] = tp.sum()
+            fp_counts[class_idx] = fp.sum()
+        results: Dict[str, torch.Tensor] = {}
+        if present_classes:
+            idx = torch.as_tensor(present_classes, dtype=torch.long, device=device)
+            results['mAP'] = aps[idx].mean()
+        else:
+            results['mAP'] = torch.zeros((), dtype=torch.float, device=device)
+        results['IoU_threshold'] = torch.tensor(self.threshold, dtype=torch.float, device=device)
+        results['AP_points'] = torch.tensor(self.nelem, dtype=torch.float, device=device)
+        results['num_eval_classes'] = torch.tensor(len(present_classes), dtype=torch.float, device=device)
+        for class_idx in range(1, num_classes):
+            if gt_counts[class_idx] == 0 and pred_counts[class_idx] == 0:
+                continue
+            name = self._class_name(class_idx)
+            results[name] = aps[class_idx]
+            results[f'GT_{name}'] = gt_counts[class_idx]
+            results[f'Pred_{name}'] = pred_counts[class_idx]
+            results[f'TP_{name}'] = tp_counts[class_idx]
+            fp_value = fp_counts[class_idx]
+            if gt_counts[class_idx] == 0 and pred_counts[class_idx] > 0:
+                fp_value = pred_counts[class_idx]
+            results[f'FP_{name}'] = fp_value
+            results[f'FN_{name}'] = torch.clamp(gt_counts[class_idx] - tp_counts[class_idx], min=0.0)
+            results[f'Precision_{name}'] = tp_counts[class_idx] / torch.clamp(tp_counts[class_idx] + fp_value, min=1.0)
+            results[f'Recall_{name}'] = tp_counts[class_idx] / torch.clamp(gt_counts[class_idx], min=1.0)
+        return results
+
+
+def cxcywh_to_xyxy_metric(boxes: torch.Tensor) -> torch.Tensor:
+    cx, cy, w, h = boxes.unbind(-1)
+    return torch.stack((cx - w * 0.5, cy - h * 0.5, cx + w * 0.5, cy + h * 0.5), dim=-1).clamp(0.0, 1.0)
 
 
 class Metric(nn.modules.loss._Loss):
