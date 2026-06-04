@@ -136,7 +136,7 @@ class LHPairsDataset(Dataset):
         self.max_time_diff = max_time_diff
         self.val_ratio = val_ratio
         self.dtype = dtype
-        self.label_aliases = {"building complex": "Building complex"}
+        self.label_aliases = {"building complex": "Building complex", "Building comlplex": "Building complex"}
         if label_aliases:
             self.label_aliases.update(label_aliases)
         self.categories = self._normalize_categories(categories)
@@ -347,7 +347,7 @@ class LHPairsDataset(Dataset):
             ir_image = read_image(str(sample["ir_image"]))
         ir_h, ir_w = ir_image.shape[-2:]
 
-        boxes, ir_boxes, labels = [], [], []
+        boxes, ir_boxes, ir_valid, labels = [], [], [], []
         for shape in data.get("shapes", []):
             label = str(shape.get("label", ""))
             label = self.label_aliases.get(label, label)
@@ -358,10 +358,13 @@ class LHPairsDataset(Dataset):
             if bbox is None:
                 continue
             projected = project_bbox_by_homography(bbox, self.homography, ir_w, ir_h)
-            if projected is None:
-                continue
             boxes.append(bbox)
-            ir_boxes.append(projected)
+            if projected is None:
+                ir_boxes.append((0.0, 0.0, 0.0, 0.0))
+                ir_valid.append(False)
+            else:
+                ir_boxes.append(projected)
+                ir_valid.append(True)
             labels.append(class_idx)
 
         if not boxes:
@@ -369,12 +372,14 @@ class LHPairsDataset(Dataset):
             return {
                 "boxes": empty_boxes,
                 "ir_boxes": empty_boxes.clone(),
+                "ir_valid": torch.zeros((0,), dtype=torch.bool),
                 "labels": torch.zeros((0,), dtype=torch.long),
             }
 
         return {
             "boxes": torch.as_tensor(boxes, dtype=torch.float32),
             "ir_boxes": torch.as_tensor(ir_boxes, dtype=torch.float32),
+            "ir_valid": torch.as_tensor(ir_valid, dtype=torch.bool),
             "labels": torch.as_tensor(labels, dtype=torch.long),
         }
 

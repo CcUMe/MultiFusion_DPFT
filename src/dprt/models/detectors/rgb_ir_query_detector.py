@@ -36,6 +36,11 @@ def cxcywh_to_xyxy(boxes: torch.Tensor) -> torch.Tensor:
     return torch.stack((cx - half_w, cy - half_h, cx + half_w, cy + half_h), dim=-1)
 
 
+def inverse_sigmoid(x: torch.Tensor, eps: float = 1e-5) -> torch.Tensor:
+    x = x.clamp(min=eps, max=1.0 - eps)
+    return torch.log(x / (1.0 - x))
+
+
 class MLP(nn.Module):
     def __init__(self, in_channels: int, hidden_channels: int, out_channels: int, num_layers: int):
         super().__init__()
@@ -52,6 +57,12 @@ class MLP(nn.Module):
         return self.layers(x)
 
 
+def _normalize_bags_groups(groups, num_classes: int) -> List[List[int]]:
+    if groups is None or groups == "auto":
+        return [list(range(1, num_classes))]
+    return [[int(class_idx) for class_idx in group] for group in groups]
+
+
 class RGBIRQueryDetector(nn.Module):
     def __init__(
         self,
@@ -66,6 +77,12 @@ class RGBIRQueryDetector(nn.Module):
         n_points: int = 4,
         dropout: float = 0.1,
         imagenet_normalize: bool = True,
+        head_name: str = "linear_detection_head",
+        bags_groups: List[List[int]] | None = None,
+        num_reg_layers: int = 3,
+        num_cls_layers: int = 3,
+        head_bias: bool = False,
+        head_dropout: float = 0.0,
         **kwargs,
     ):
         super().__init__()
@@ -78,7 +95,9 @@ class RGBIRQueryDetector(nn.Module):
         self.num_queries = num_queries
         self.num_classes = num_classes
         self.feature_levels = feature_levels
+        self.n_levels = len(feature_levels) if feature_levels is not None else None
         self.imagenet_normalize = imagenet_normalize
+        self.use_bags = "bags" in head_name.lower() or bags_groups is not None
 
         self.register_buffer("reference_points", _make_reference_grid(num_queries), persistent=False)
         self.register_buffer(
@@ -94,8 +113,9 @@ class RGBIRQueryDetector(nn.Module):
 
         self.query_embed = nn.Parameter(torch.empty(num_queries, d_model))
         self.reference_embed = MLP(2, d_model, d_model, 2)
-        self.rgb_attention = MSDeformAttn(d_model=d_model, n_levels=3, n_heads=n_heads, n_points=n_points)
-        self.ir_attention = MSDeformAttn(d_model=d_model, n_levels=3, n_heads=n_heads, n_points=n_points)
+        attn_levels = self.n_levels if self.n_levels is not None else 4
+        self.rgb_attention = MSDeformAttn(d_model=d_model, n_levels=attn_levels, n_heads=n_heads, n_points=n_points)
+        self.ir_attention = MSDeformAttn(d_model=d_model, n_levels=attn_levels, n_heads=n_heads, n_points=n_points)
         self.fusion = nn.Sequential(
             nn.Linear(d_model * 2, d_model),
             nn.ReLU(),
@@ -103,8 +123,16 @@ class RGBIRQueryDetector(nn.Module):
             nn.Linear(d_model, d_model),
         )
         self.norm = nn.LayerNorm(d_model)
-        self.class_head = MLP(d_model, d_model, num_classes, 3)
-        self.box_head = MLP(d_model, d_model, 4, 3)
+        self.head_dropout = head_dropout
+        self.box_head = self._get_head_branch(4, num_reg_layers, head_bias, head_dropout)
+        if self.use_bags:
+            self.groups = _normalize_bags_groups(bags_groups, num_classes)
+            self.group_sizes = [len(group) + 1 for group in self.groups]
+            self.num_bags_logits = sum(self.group_sizes)
+            self.objectness_head = self._get_head_branch(1, num_cls_layers, head_bias, head_dropout)
+            self.bags_head = self._get_head_branch(self.num_bags_logits, num_cls_layers, head_bias, head_dropout)
+        else:
+            self.class_head = self._get_head_branch(num_classes, num_cls_layers, head_bias, head_dropout)
         self._reset_parameters()
 
     @classmethod
@@ -120,6 +148,7 @@ class RGBIRQueryDetector(nn.Module):
             for key, module_config in model.get("necks", {}).items()
         }
         head_config = model.get("head", {})
+        bags_config = head_config.get("bags", {})
         return cls(
             inputs=model.get("inputs", ["camera_mono", "ir_image"]),
             backbones=backbones,
@@ -127,12 +156,27 @@ class RGBIRQueryDetector(nn.Module):
             d_model=model.get("d_model", head_config.get("in_channels", 256)),
             num_queries=model.get("num_queries", 400),
             num_classes=head_config.get("num_classes", model.get("num_classes", 8)),
-            feature_levels=model.get("feature_levels", ["2", "3", "4"]),
+            feature_levels=model.get("feature_levels", ["1", "2", "3", "4"]),
             n_heads=model.get("n_heads", 8),
             n_points=model.get("n_points", 4),
             dropout=model.get("dropout", 0.1),
             imagenet_normalize=model.get("imagenet_normalize", True),
+            head_name=head_config.get("name", "linear_detection_head"),
+            bags_groups=bags_config.get("groups", head_config.get("groups")),
+            num_reg_layers=head_config.get("num_reg_layers", 3),
+            num_cls_layers=head_config.get("num_cls_layers", 3),
+            head_bias=head_config.get("bias", False),
+            head_dropout=head_config.get("dropout", 0.0),
         )
+
+    def _get_head_branch(self, out_channels: int, num_layers: int, bias: bool, dropout: float) -> nn.Module:
+        branch = []
+        for _ in range(num_layers - 1):
+            branch.append(nn.Linear(self.d_model, self.d_model, bias=bias))
+            branch.append(nn.ReLU())
+            branch.append(nn.Dropout(dropout))
+        branch.append(nn.Linear(self.d_model, out_channels, bias=bias))
+        return nn.Sequential(*branch)
 
     def _reset_parameters(self) -> None:
         nn.init.normal_(self.query_embed, std=0.02)
@@ -147,11 +191,12 @@ class RGBIRQueryDetector(nn.Module):
         features = self.backbones[key](image)
         features = self.necks[key](features)
         if self.feature_levels is None:
-            selected_keys = list(features.keys())[-3:]
+            selected_keys = list(features.keys())
         else:
             selected_keys = [level for level in self.feature_levels if level in features]
-        if len(selected_keys) != 3:
-            raise ValueError(f"Expected 3 FPN levels for {key}, got {selected_keys}.")
+        expected_levels = self.n_levels if self.n_levels is not None else len(features)
+        if len(selected_keys) != expected_levels:
+            raise ValueError(f"Expected {expected_levels} FPN levels for {key}, got {selected_keys}.")
         return OrderedDict((level, features[level]) for level in selected_keys)
 
     @staticmethod
@@ -193,6 +238,26 @@ class RGBIRQueryDetector(nn.Module):
         ir_refs = torch.stack((ir_x / torch.clamp(ir_w, min=1.0), ir_y / torch.clamp(ir_h, min=1.0)), dim=-1)
         return torch.clamp(ir_refs, 0.0, 1.0)
 
+    def _bags_to_class_scores(self, objectness: torch.Tensor, bags_logits: torch.Tensor) -> torch.Tensor:
+        scores = torch.zeros(
+            bags_logits.shape[:-1] + (self.num_classes,),
+            dtype=bags_logits.dtype,
+            device=bags_logits.device,
+        )
+        object_prob = torch.sigmoid(objectness).squeeze(-1)
+        scores[..., 0] = 1.0 - object_prob
+
+        start = 0
+        for group, size in zip(self.groups, self.group_sizes):
+            logits = bags_logits[..., start:start + size]
+            probs = F.softmax(logits, dim=-1)
+            for local_idx, class_idx in enumerate(group):
+                if 0 <= class_idx < self.num_classes:
+                    scores[..., class_idx] = object_prob * probs[..., local_idx]
+            start += size
+
+        return scores
+
     def forward(self, batch: Dict[str, torch.Tensor], *args, **kwargs) -> Dict[str, torch.Tensor]:
         rgb_features = self._extract_features(self.rgb_key, batch[self.rgb_key])
         ir_features = self._extract_features(self.ir_key, batch[self.ir_key])
@@ -216,17 +281,32 @@ class RGBIRQueryDetector(nn.Module):
         ir_query = self.ir_attention(query, ir_reference, ir_flat, ir_shapes, ir_level_index)
         fused = self.norm(query + self.fusion(torch.cat((rgb_query, ir_query), dim=-1)))
 
-        class_logits = self.class_head(fused)
-        boxes = torch.sigmoid(self.box_head(fused))
+        box_raw = self.box_head(fused)
+        centers = torch.sigmoid(box_raw[..., :2] + inverse_sigmoid(refs))
+        sizes = torch.sigmoid(box_raw[..., 2:])
+        boxes = torch.cat((centers, sizes), dim=-1)
         boxes_xyxy = torch.clamp(cxcywh_to_xyxy(boxes), 0.0, 1.0)
-        return {
-            "class_logits": class_logits,
+        out = {
             "boxes": boxes,
             "boxes_xyxy": boxes_xyxy,
-            "class": F.softmax(class_logits, dim=-1),
             "reference_points": refs,
             "ir_reference_points": ir_refs,
         }
+        if self.use_bags:
+            objectness = self.objectness_head(fused)
+            bags_logits = self.bags_head(fused)
+            out.update({
+                "objectness": objectness,
+                "bags_logits": bags_logits,
+                "class": self._bags_to_class_scores(objectness, bags_logits),
+            })
+        else:
+            class_logits = self.class_head(fused)
+            out.update({
+                "class_logits": class_logits,
+                "class": F.softmax(class_logits, dim=-1),
+            })
+        return out
 
 
 def build_rgb_ir_query_detector(*args, **kwargs):

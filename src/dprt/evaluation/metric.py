@@ -648,8 +648,9 @@ class mAP2D(nn.modules.loss._Loss):
                         targets: List[Dict[str, torch.Tensor]]) -> Dict[str, torch.Tensor]:
         if not inputs:
             return {'mAP': torch.ones((), dtype=torch.float)}
-        device = inputs[0]['class_logits'].device
-        num_classes = inputs[0]['class_logits'].shape[-1]
+        score_key = 'class' if 'class' in inputs[0] else 'class_logits'
+        device = inputs[0][score_key].device
+        num_classes = inputs[0][score_key].shape[-1]
         gt_counts = torch.zeros((num_classes,), dtype=torch.float, device=device)
         pred_counts = torch.zeros((num_classes,), dtype=torch.float, device=device)
         tp_counts = torch.zeros((num_classes,), dtype=torch.float, device=device)
@@ -657,7 +658,10 @@ class mAP2D(nn.modules.loss._Loss):
         aps = torch.zeros((num_classes,), dtype=torch.float, device=device)
         per_sample = []
         for input, target in zip(inputs, targets):
-            probs = torch.softmax(input['class_logits'], dim=-1)
+            if 'class' in input:
+                probs = input['class']
+            else:
+                probs = torch.softmax(input['class_logits'], dim=-1)
             pred_scores, pred_labels = probs[:, 1:].max(dim=-1)
             pred_labels = pred_labels + 1
             pred_boxes = input.get('boxes_xyxy')
@@ -957,7 +961,7 @@ def _get_metric(config: Any, class_names: List[str] = None) -> nn.modules.loss._
         name = config.get('name')
         params = {k: v for k, v in config.items() if k != 'name'}
 
-    if name in {'mAP3D', 'WeakBEVMetric'} and class_names is not None:
+    if name in {'mAP3D', 'mAP2D', 'WeakBEVMetric'} and class_names is not None:
         params.setdefault('class_names', class_names)
 
     try:

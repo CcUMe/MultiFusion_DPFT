@@ -1,9 +1,9 @@
 import argparse
 import datetime
 import os.path as osp
-import os
-os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 
+import os
+os.environ.setdefault('CUDA_VISIBLE_DEVICES', '0')
 from dprt.datasets import init as init_dataset
 from dprt.datasets import load as load_dataset
 from dprt.models import load_model
@@ -63,9 +63,9 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser('DPRT data preprocessing')
     parser.add_argument('--src', type=str, default='/mnt/disk1/zhangzhibin/dataset/LH_pairs_dataset',
                         help="Path to the processed dataset folder.")
-    parser.add_argument('--cfg', type=str, default='/mnt/disk1/zhangzhibin/dpft_v4/config/la-tom_all_modal.json',
+    parser.add_argument('--cfg', type=str, default='/mnt/disk1/zhangzhibin/dpft_v4/config/la-tom.json',
                         help="Path to the configuration file.")
-    parser.add_argument('--dst', type=str, default='/mnt/disk1/zhangzhibin/test/2D',
+    parser.add_argument('--dst', type=str, default='/mnt/disk1/zhangzhibin/test/2D-2',
                         help="Path to save the training log.")
     parser.add_argument('--checkpoint', type=str,default=None,
                         help="Path to a model checkpoint to resume training from.")

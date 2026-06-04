@@ -927,6 +927,166 @@ class TwoDSetCriterion(nn.Module):
         }
 
 
+class TwoDBAGSSetCriterion(nn.Module):
+    allow_empty_targets = True
+
+    def __init__(self,
+                 groups: List[List[int]] = None,
+                 num_classes: int = 8,
+                 background_weight: float = 0.1,
+                 others_sample_ratio: int = 4,
+                 cost_class: float = 1.0,
+                 cost_bbox: float = 5.0,
+                 cost_giou: float = 2.0,
+                 **kwargs):
+        super().__init__()
+        self.groups = self._normalize_groups(groups, num_classes)
+        self.num_classes = num_classes
+        self.background_weight = background_weight
+        self.others_sample_ratio = others_sample_ratio
+        self.cost_class = cost_class
+        self.cost_bbox = cost_bbox
+        self.cost_giou = cost_giou
+
+    @classmethod
+    def from_config(cls, config: Dict[str, Any]) -> 'TwoDBAGSSetCriterion':
+        model_head = config.get('model', {}).get('head', {})
+        bags_config = model_head.get('bags', {})
+        train_config = config.get('train', {})
+        return cls(
+            groups=bags_config.get('groups', model_head.get('groups')),
+            num_classes=model_head.get('num_classes', config.get('data', {}).get('num_classes', 8)),
+            background_weight=train_config.get('background_weight', bags_config.get('background_weight', 0.1)),
+            others_sample_ratio=train_config.get(
+                'others_sample_ratio',
+                bags_config.get('others_sample_ratio', bags_config.get('beta', 4))
+            ),
+            cost_class=train_config.get('cost_class', 1.0),
+            cost_bbox=train_config.get('cost_bbox', 5.0),
+            cost_giou=train_config.get('cost_giou', 2.0),
+        )
+
+    @staticmethod
+    def _normalize_groups(groups, num_classes: int):
+        if groups is None or groups == 'auto':
+            return [list(range(1, num_classes))]
+        return [[int(class_idx) for class_idx in group] for group in groups]
+
+    @torch.no_grad()
+    def _match(self, inputs: Dict[str, torch.Tensor], targets: Dict[str, torch.Tensor]):
+        labels = targets['labels'][0]
+        target_boxes = targets['boxes_cxcywh'][0]
+        if labels.numel() == 0:
+            empty = torch.zeros((0,), dtype=torch.long, device=inputs['boxes'].device)
+            return empty, empty
+
+        if 'class' in inputs:
+            prob = inputs['class'][0]
+        else:
+            prob = inputs['class_logits'][0].softmax(-1)
+        out_boxes = inputs['boxes'][0]
+        cost_class = -prob[:, labels]
+        cost_bbox = torch.cdist(out_boxes, target_boxes, p=1)
+        cost_giou = -generalized_box_iou(
+            cxcywh_to_xyxy_2d(out_boxes),
+            cxcywh_to_xyxy_2d(target_boxes),
+        )
+        cost = self.cost_class * cost_class + self.cost_bbox * cost_bbox + self.cost_giou * cost_giou
+        row_ind, col_ind = linear_sum_assignment(cost.detach().cpu())
+        return (
+            torch.as_tensor(row_ind, dtype=torch.long, device=out_boxes.device),
+            torch.as_tensor(col_ind, dtype=torch.long, device=out_boxes.device),
+        )
+
+    def objectness_loss(self,
+                        inputs: Dict[str, torch.Tensor],
+                        indices: Tuple[torch.Tensor, torch.Tensor]) -> torch.Tensor:
+        logits = inputs['objectness'].squeeze(-1)
+        target = torch.zeros_like(logits)
+        weights = torch.full_like(logits, self.background_weight)
+        pred_idx, _ = indices
+        if pred_idx.numel():
+            target[0, pred_idx] = 1.0
+            weights[0, pred_idx] = 1.0
+        loss = F.binary_cross_entropy_with_logits(logits, target, weight=weights, reduction='sum')
+        return loss / torch.clamp(weights.sum(), min=1.0)
+
+    def bags_class_loss(self,
+                        inputs: Dict[str, torch.Tensor],
+                        targets: Dict[str, torch.Tensor],
+                        indices: Tuple[torch.Tensor, torch.Tensor]) -> torch.Tensor:
+        pred_idx, target_idx = indices
+        if not pred_idx.numel():
+            return inputs['bags_logits'].sum() * 0.0
+
+        bags_logits = inputs['bags_logits'][0, pred_idx]
+        gt_class = targets['labels'][0, target_idx]
+        losses = []
+        start = 0
+        for group in self.groups:
+            size = len(group) + 1
+            logits = bags_logits[:, start:start + size]
+            start += size
+
+            local_target = torch.full(
+                (gt_class.shape[0],),
+                fill_value=len(group),
+                dtype=torch.long,
+                device=gt_class.device,
+            )
+            positive = torch.zeros_like(gt_class, dtype=torch.bool)
+            for local_idx, class_idx in enumerate(group):
+                mask = gt_class == class_idx
+                local_target[mask] = local_idx
+                positive |= mask
+
+            if not positive.any():
+                continue
+
+            selected = positive.clone()
+            others = ~positive
+            max_others = int(self.others_sample_ratio * positive.sum().item())
+            if max_others > 0 and others.sum().item() > max_others:
+                others_idx = torch.nonzero(others, as_tuple=False).flatten()
+                perm = torch.randperm(others_idx.numel(), device=others_idx.device)[:max_others]
+                selected[others_idx[perm]] = True
+            else:
+                selected |= others
+
+            losses.append(F.cross_entropy(logits[selected], local_target[selected], reduction='mean'))
+
+        if not losses:
+            return inputs['bags_logits'].sum() * 0.0
+        return torch.stack(losses).mean()
+
+    def forward(self, inputs: Dict[str, torch.Tensor], targets: Dict[str, torch.Tensor], indices=None):
+        boxes = inputs['boxes']
+        if indices is None:
+            indices = self._match(inputs, targets)
+        pred_idx, target_idx = indices
+
+        losses = {
+            'objectness': self.objectness_loss(inputs, indices),
+            'bags_class': self.bags_class_loss(inputs, targets, indices),
+        }
+
+        if pred_idx.numel() == 0:
+            zero = boxes.sum() * 0.0
+            losses.update({'bbox': zero, 'giou': zero})
+            return losses
+
+        src_boxes = boxes[0, pred_idx]
+        target_boxes = targets['boxes_cxcywh'][0, target_idx]
+        loss_bbox = F.l1_loss(src_boxes, target_boxes, reduction='none').sum() / pred_idx.numel()
+        giou = torch.diag(generalized_box_iou(
+            cxcywh_to_xyxy_2d(src_boxes),
+            cxcywh_to_xyxy_2d(target_boxes),
+        ))
+        loss_giou = (1.0 - giou).sum() / pred_idx.numel()
+        losses.update({'bbox': loss_bbox, 'giou': loss_giou})
+        return losses
+
+
 def _get_loss(name: str, config: Dict[str, Any] = None) -> nn.modules.loss._Loss:
     """Returns a pytorch or custom loss function given its name.
 
