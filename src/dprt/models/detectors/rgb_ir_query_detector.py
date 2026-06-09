@@ -64,6 +64,19 @@ def _normalize_bags_groups(groups, num_classes: int) -> List[List[int]]:
     return [[int(class_idx) for class_idx in group] for group in groups]
 
 
+def _first(value, default):
+    if isinstance(value, (list, tuple)):
+        return value[0] if value else default
+    return default if value is None else value
+
+
+def _query_count(querent_config: Dict[str, Any], default: int = 400) -> int:
+    resolution = querent_config.get("resolution")
+    if not resolution:
+        return default
+    return math.prod(int(value) for value in resolution)
+
+
 class RGBIRQueryDetector(nn.Module):
     def __init__(
         self,
@@ -152,6 +165,9 @@ class RGBIRQueryDetector(nn.Module):
         }
         head_config = model.get("head", {})
         bags_config = head_config.get("bags", {})
+        querent_config = model.get("querent", {})
+        fuser_config = model.get("fuser", {})
+        n_levels = _first(fuser_config.get("n_levels"), 4)
         language_config = model.get("language_model")
         language_model = None
         if language_config and language_config.get("enabled", False):
@@ -162,13 +178,13 @@ class RGBIRQueryDetector(nn.Module):
             inputs=model.get("inputs", ["camera_mono", "ir_image"]),
             backbones=backbones,
             necks=necks,
-            d_model=model.get("d_model", head_config.get("in_channels", 256)),
-            num_queries=model.get("num_queries", 400),
+            d_model=fuser_config.get("d_model", model.get("d_model", head_config.get("in_channels", 256))),
+            num_queries=fuser_config.get("n_queries", model.get("num_queries", _query_count(querent_config))),
             num_classes=head_config.get("num_classes", model.get("num_classes", 8)),
-            feature_levels=model.get("feature_levels", ["1", "2", "3", "4"]),
-            n_heads=model.get("n_heads", 8),
-            n_points=model.get("n_points", 4),
-            dropout=model.get("dropout", 0.1),
+            feature_levels=model.get("feature_levels", [str(index) for index in range(1, int(n_levels) + 1)]),
+            n_heads=_first(fuser_config.get("n_heads"), model.get("n_heads", 8)),
+            n_points=_first(fuser_config.get("n_points"), model.get("n_points", 4)),
+            dropout=fuser_config.get("dropout", model.get("dropout", 0.1)),
             imagenet_normalize=model.get("imagenet_normalize", True),
             head_name=head_config.get("name", "linear_detection_head"),
             bags_groups=bags_config.get("groups", head_config.get("groups")),
