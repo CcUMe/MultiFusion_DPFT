@@ -44,6 +44,26 @@ class Qwen3VL8BAdapter(nn.Module):
         if self.enabled and self.load_model:
             self._load_backbone()
 
+    def _apply(self, fn):
+        if not self.extra_config.get("keep_on_cpu", True) or self.language_model is None:
+            return super()._apply(fn)
+
+        language_model = self._modules.pop("language_model")
+        try:
+            return super()._apply(fn)
+        finally:
+            self._modules["language_model"] = language_model
+
+    def state_dict(self, *args, **kwargs):
+        if self.extra_config.get("save_pretrained_weights", False) or self.language_model is None:
+            return super().state_dict(*args, **kwargs)
+
+        language_model = self._modules.pop("language_model")
+        try:
+            return super().state_dict(*args, **kwargs)
+        finally:
+            self._modules["language_model"] = language_model
+
     def extra_repr(self) -> str:
         return (
             f"model_id={self.model_id!r}, enabled={self.enabled}, "
@@ -61,16 +81,22 @@ class Qwen3VL8BAdapter(nn.Module):
                 "passthrough stage."
             ) from exc
 
-        self.processor = AutoProcessor.from_pretrained(
-            self.model_id,
-            cache_dir=self.cache_dir,
-            trust_remote_code=True
-        )
+        if self.extra_config.get("load_processor", False):
+            self.processor = AutoProcessor.from_pretrained(
+                self.model_id,
+                cache_dir=self.cache_dir,
+                trust_remote_code=True
+            )
+        torch_dtype = self.extra_config.get("torch_dtype", "float16")
+        if isinstance(torch_dtype, str) and torch_dtype != "auto" and hasattr(torch, torch_dtype):
+            torch_dtype = getattr(torch, torch_dtype)
+
         self.language_model = AutoModel.from_pretrained(
             self.model_id,
             cache_dir=self.cache_dir,
             trust_remote_code=True,
-            torch_dtype=self.extra_config.get("torch_dtype", "auto")
+            torch_dtype=torch_dtype,
+            low_cpu_mem_usage=True,
         )
         self.language_model.eval()
         for param in self.language_model.parameters():

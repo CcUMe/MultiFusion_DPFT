@@ -22,8 +22,6 @@ def main(src: str, cfg: str, checkpoint: str, dst: str):
     """
     # Load dataset configuration
     config = load_config(cfg)
-
-    config = load_config(cfg)
     print("=" * 60)
     print("[数据集路径信息]")
     print("=" * 60)
@@ -110,14 +108,14 @@ import torch.utils.data as data
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser('DPRT data preprocessing')
-    parser.add_argument('--src', type=str, default='/mnt/disk1/zhangzhibin/dataset/kradar/',
+    parser.add_argument('--src', type=str, default='/mnt/disk1/zhangzhibin/dataset/LH_pairs_dataset_auto_v2',
                         help="Path to the processed dataset folder.")
-    parser.add_argument('--cfg', type=str, default='/home/yangqilin/code/dpft_v4/config/la-tom.json',
+    parser.add_argument('--cfg', type=str, default='/mnt/disk1/zhangzhibin/dpft_v4/config/la-tom.json',
                         help="Path to the configuration file.")
-    parser.add_argument('--dst', type=str, default='/mnt/disk1/yangqilin/dpft/log',
+    parser.add_argument('--dst', type=str, default='/mnt/disk1/zhangzhibin/test/low-v2-eval',
                         help="Path to save the training log.")
-    parser.add_argument('--checkpoint', type=str,default="/mnt/disk1/yangqilin/dpft/log/20260430-134542-435/checkpoints/20260430-134542-435_checkpoint_0231.pt",
-                        help="Path to a model checkpoint to resume training from.")
+    parser.add_argument('--checkpoint', type=str, required=True,
+                        help="Path to the model checkpoint to evaluate.")
     args = parser.parse_args()
 
 

@@ -56,20 +56,18 @@ def load_model(checkpoint, config):
     timestamp = parts[0]
     epoch = int(parts[-1])
 
-    obj = torch.load(checkpoint)
+    obj = torch.load(checkpoint, map_location="cpu")
 
     if isinstance(obj, torch.nn.Module):
         model = obj
 
-    # elif isinstance(obj, dict) and "model_state_dict" in obj:
-    #     print("000")
-    #
-    #     model = DPRT.from_config(config)
-    #     model.load_state_dict(obj["model_state_dict"], strict=True)
-
     elif isinstance(obj, dict):
-        model = DPRT.from_config(config)
-        model.load_state_dict(obj, strict=False)
+        model_name = config.get("model", {}).get("name")
+        model = build(model_name, config)
+        if model is None:
+            raise ValueError(f"Unsupported model type in config: {model_name!r}")
+        state_dict = obj.get("model_state_dict", obj)
+        model.load_state_dict(state_dict, strict=True)
 
     else:
         raise TypeError(f"Unsupported checkpoint type: {type(obj)}")

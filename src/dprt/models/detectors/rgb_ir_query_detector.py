@@ -11,6 +11,7 @@ import torch.nn.functional as F
 from torch import nn
 
 from dprt.models.backbones import build_backbone
+from dprt.models.language_models import build_language_model
 from dprt.models.layers.ms_deform_attn import MSDeformAttn
 from dprt.models.necks import build_neck
 
@@ -83,6 +84,7 @@ class RGBIRQueryDetector(nn.Module):
         num_cls_layers: int = 3,
         head_bias: bool = False,
         head_dropout: float = 0.0,
+        language_model: nn.Module | None = None,
         **kwargs,
     ):
         super().__init__()
@@ -98,6 +100,7 @@ class RGBIRQueryDetector(nn.Module):
         self.n_levels = len(feature_levels) if feature_levels is not None else None
         self.imagenet_normalize = imagenet_normalize
         self.use_bags = "bags" in head_name.lower() or bags_groups is not None
+        self.language_model = language_model
 
         self.register_buffer("reference_points", _make_reference_grid(num_queries), persistent=False)
         self.register_buffer(
@@ -149,6 +152,12 @@ class RGBIRQueryDetector(nn.Module):
         }
         head_config = model.get("head", {})
         bags_config = head_config.get("bags", {})
+        language_config = model.get("language_model")
+        language_model = None
+        if language_config and language_config.get("enabled", False):
+            language_model = build_language_model(
+                language_config.get("name", "qwen_14b"), language_config
+            )
         return cls(
             inputs=model.get("inputs", ["camera_mono", "ir_image"]),
             backbones=backbones,
@@ -167,6 +176,7 @@ class RGBIRQueryDetector(nn.Module):
             num_cls_layers=head_config.get("num_cls_layers", 3),
             head_bias=head_config.get("bias", False),
             head_dropout=head_config.get("dropout", 0.0),
+            language_model=language_model,
         )
 
     def _get_head_branch(self, out_channels: int, num_layers: int, bias: bool, dropout: float) -> nn.Module:
@@ -306,6 +316,8 @@ class RGBIRQueryDetector(nn.Module):
                 "class_logits": class_logits,
                 "class": F.softmax(class_logits, dim=-1),
             })
+        if self.language_model is not None:
+            out = self.language_model(out, batch=batch, features={"fused_queries": fused})
         return out
 
 
