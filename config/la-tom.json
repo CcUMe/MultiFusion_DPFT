@@ -1,14 +1,12 @@
 {
     "dataset": "lh_pairs",
     "task": "2d_detection",
-
     "computing": {
         "dtype": "float32",
         "seed": 42,
         "workers": 4,
         "device": "cuda:0"
     },
-
     "data": {
         "manifest": "/mnt/disk1/zhangzhibin/dataset/LH_pairs_dataset_auto_v2/scan_manifest.json",
         "homography": "/mnt/disk1/zhangzhibin/draw/H.npy",
@@ -33,7 +31,6 @@
         },
         "subset": null
     },
-
     "train": {
         "batch_size": 32,
         "shuffle": true,
@@ -62,9 +59,8 @@
             "giou": 1.0
         }
     },
-
     "model": {
-        "name": "rgb_ir_query_detector",
+        "name": "dprt",
         "inputs": [
             "camera_mono",
             "ir_image"
@@ -152,11 +148,11 @@
             ],
             "norm": true,
             "dropout": 0.2,
-            "reduction": "concat_mlp",
-            "activation": "ReLU"
+            "reduction": "weighted",
+            "activation": "Mish"
         },
         "head": {
-            "name": "bags_linear_detection_head",
+            "name": "bags_2d_detection_head",
             "in_channels": 16,
             "num_classes": 9,
             "num_reg_layers": 3,
@@ -194,7 +190,6 @@
             "keep_on_cpu": true
         }
     },
-
     "evaluate": {
         "logging": "epoch",
         "metrics": {

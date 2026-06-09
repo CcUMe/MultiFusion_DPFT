@@ -1,7 +1,11 @@
 from dprt.models.fusers.basempfusion import build_basempfusion
 from dprt.models.fusers.mpfusion import build_basempoptfusion
+from dprt.models.fusers.rgb_ir_query_fusion import build_rgb_ir_query_fusion
 
 def build_fuser(name: str, *args, **kwargs):
+    if 'rgb_ir_query_fusion' in name.lower():
+        return build_rgb_ir_query_fusion(*args, **kwargs)
+
     if 'mpfusion' in name.lower():
         return build_basempoptfusion(*args, **kwargs)
 

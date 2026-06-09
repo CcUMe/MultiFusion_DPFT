@@ -120,7 +120,7 @@ if __name__ == '__main__':
                         help="Path to the processed dataset folder.")
     parser.add_argument('--cfg', type=str, default='/mnt/disk1/zhangzhibin/dpft_v4/config/la-tom-qwen14b.json',
                         help="Path to the configuration file.")
-    parser.add_argument('--dst', type=str, default='/mnt/disk1/zhangzhibin/test/shishi',
+    parser.add_argument('--dst', type=str, default='/mnt/disk1/zhangzhibin/test/low_v2',
                         help="Path to save the training log.")
     parser.add_argument('--checkpoint', type=str,default=None,
                         help="Path to a model checkpoint to resume training from.")

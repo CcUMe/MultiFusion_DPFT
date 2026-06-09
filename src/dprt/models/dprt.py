@@ -110,6 +110,7 @@
 #         self.querent = self._module_or_identity(querent)
 #         self.fuser = self._module_or_identity(fuser)
 #         self.head = self._module_or_identity(head)
+#         self.language_model = language_model
 #
 #         self.lidar_bn = nn.ModuleDict()
 #
@@ -284,6 +285,7 @@ from dprt.models.embeddings import build_embedding
 from dprt.models.queries import build_querent
 from dprt.models.fusers import build_fuser
 from dprt.models.heads import build_head
+from dprt.models.language_models import build_language_model
 
 
 def _build_module(build_fn: Callable, module_name: str,
@@ -321,6 +323,7 @@ class DPRT(nn.Module):
                  querent: nn.Module = None,
                  fuser: nn.Module = None,
                  head: nn.Module = None,
+                 language_model: nn.Module = None,
                  **kwargs):
         """Dual Perspective Radar Transformer"""
         super().__init__()
@@ -338,6 +341,7 @@ class DPRT(nn.Module):
         self.querent = self._module_or_identity(querent)
         self.fuser = self._module_or_identity(fuser)
         self.head = self._module_or_identity(head)
+        self.language_model = language_model
 
         self.lidar_bn = nn.ModuleDict()
 
@@ -351,6 +355,12 @@ class DPRT(nn.Module):
         model: Dict[str, Any] = config['model']
         head = _build_module(build_head, 'head', model, computing)
         fuser = _build_module(build_fuser, 'fuser', model, computing, head=head)
+        language_config = model.get('language_model')
+        language_model = None
+        if language_config and language_config.get('enabled', False):
+            language_model = build_language_model(
+                language_config.get('name', 'qwen_14b'), language_config
+            )
         return cls(
             inputs=model.get('inputs'),
             skiplinks=model.get('skiplinks'),
@@ -359,7 +369,8 @@ class DPRT(nn.Module):
             embeddings=_build_modules(build_embedding, 'embeddings', model, computing),
             querent=_build_module(build_querent, 'querent', model, computing),
             fuser=fuser,
-            head=head
+            head=head,
+            language_model=language_model
         )
 
     def _init_unspecified(self, submodule: Dict[str, nn.Module]) -> Dict[str, nn.Module]:
@@ -381,6 +392,22 @@ class DPRT(nn.Module):
     @staticmethod
     def _get_projetions(inputs: List[str],
                         batch: Dict[str, torch.Tensor]) -> List[Tuple[torch.Tensor, torch.Tensor]]:
+        if (
+            "homography_rgb_to_ir" in batch
+            and "rgb_original_size" in batch
+            and "ir_original_size" in batch
+            and inputs == ["camera_mono", "ir_image"]
+        ):
+            return [
+                {
+                    "homography": None,
+                    "original_size": batch["rgb_original_size"],
+                },
+                {
+                    "homography": batch["homography_rgb_to_ir"],
+                    "original_size": batch["ir_original_size"],
+                },
+            ]
         return [
             (batch[f'label_to_{input}_t'], batch[f'label_to_{input}_p'])
             for input in inputs
@@ -549,8 +576,8 @@ class DPRT(nn.Module):
         # ── 2. Skip-link ──────────────────────────────────────────────
         t0 = self._sync_time() if profile else None
         features = {
-            input: self._add_raw_data(features[input], batch[input])
-            for input in self.inputs if self.skiplinks[input]
+            input: self._add_raw_data(features[input], batch[input]) if self.skiplinks[input] else features[input]
+            for input in self.inputs
         }
         if profile:
             timing['skiplink'] = (self._sync_time() - t0) * 1000
@@ -597,6 +624,17 @@ class DPRT(nn.Module):
         if profile:
             raw_fuser_ms = (self._sync_time() - t0) * 1000
             timing['fuser'] = max(raw_fuser_ms, 0.0)
+
+        # ── 8. Language model ─────────────────────────────────────────
+        t0 = self._sync_time() if profile else None
+        if self.language_model is not None:
+            lm_features = {
+                'fused_queries': getattr(self.fuser, 'last_query', None),
+                'multi_scale_features': features,
+            }
+            out = self.language_model(out, batch=batch, features=lm_features)
+        if profile:
+            timing['language_model'] = (self._sync_time() - t0) * 1000
 
         # ── Store & display ───────────────────────────────────────────
         if profile:
