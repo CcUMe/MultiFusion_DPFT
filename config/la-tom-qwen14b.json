@@ -129,7 +129,7 @@
         },
         "fuser": {
             "name": "rgb_ir_query_fusion",
-            "i_iter": 1,
+            "i_iter": 3,
             "m_views": 2,
             "d_model": 16,
             "d_ffn": 32,
