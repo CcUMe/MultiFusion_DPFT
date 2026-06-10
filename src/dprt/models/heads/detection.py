@@ -482,6 +482,7 @@ class BAGS2DDetectionHead(nn.Module):
         out['boxes'] = self._decode_boxes(batch, ref)
         out['boxes_xyxy'] = torch.clamp(self._cxcywh_to_xyxy(out['boxes']), 0.0, 1.0)
         out['reference_points'] = ref['center'][..., :2]
+        out['center'] = out['boxes'][..., :2]
         out['objectness'] = self.layers['objectness_head'](batch)
         out['bags_logits'] = self.layers['bags_head'](batch)
         out['class'] = self._bags_to_class_scores(out['objectness'], out['bags_logits'])

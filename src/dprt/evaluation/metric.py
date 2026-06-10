@@ -636,13 +636,23 @@ class mAP2D(nn.modules.loss._Loss):
         return f'class_{class_idx}'
 
     def _average_precision(self, tp: torch.Tensor, fp: torch.Tensor, npos: int) -> torch.Tensor:
+        if tp.numel() == 0:
+            return torch.zeros((), dtype=torch.float, device=tp.device)
+
         tp = torch.cumsum(tp, dim=0)
         fp = torch.cumsum(fp, dim=0)
         precision = tp / torch.clamp(tp + fp, min=1.0)
         recall = tp / float(max(npos, 1))
-        rec_interp = torch.linspace(0, 1, self.nelem, dtype=recall.dtype, device=recall.device)
-        prec_interp = interp(rec_interp, recall, precision, right=0)
-        return prec_interp.mean()
+        recall_points = torch.linspace(0, 1, self.nelem, dtype=recall.dtype, device=recall.device)
+        sampled_precision = []
+        for recall_point in recall_points:
+            keep = recall >= recall_point
+            sampled_precision.append(
+                precision[keep].max()
+                if keep.any()
+                else torch.zeros((), dtype=torch.float, device=tp.device)
+            )
+        return torch.stack(sampled_precision).mean()
 
     def compute_dataset(self, inputs: List[Dict[str, torch.Tensor]],
                         targets: List[Dict[str, torch.Tensor]]) -> Dict[str, torch.Tensor]:

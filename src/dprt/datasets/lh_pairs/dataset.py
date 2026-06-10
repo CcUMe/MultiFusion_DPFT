@@ -120,6 +120,7 @@ class LHPairsDataset(Dataset):
         max_time_diff: float = 0.25,
         categories: Dict[str, int] | None = None,
         label_aliases: Dict[str, str] | None = None,
+        inputs: List[str] | None = None,
         val_ratio: float = 0.2,
         dtype: str = "float32",
         **kwargs,
@@ -136,6 +137,7 @@ class LHPairsDataset(Dataset):
         self.max_time_diff = max_time_diff
         self.val_ratio = val_ratio
         self.dtype = dtype
+        self.inputs = inputs if inputs is not None else ["camera_mono", "ir_image"]
         self.label_aliases = {"building complex": "Building complex", "Building comlplex": "Building complex"}
         if label_aliases:
             self.label_aliases.update(label_aliases)
@@ -144,55 +146,63 @@ class LHPairsDataset(Dataset):
 
     @classmethod
     def from_config(cls, config: Dict[str, Any], *args, **kwargs) -> "LHPairsDataset":
-        return cls(*args, **dict(config["computing"] | config["data"]), **kwargs)
+        dataset_config = dict(config["computing"] | config["data"])
+        dataset_config["inputs"] = config.get("model", {}).get("inputs")
+        return cls(*args, **dataset_config, **kwargs)
 
     def __len__(self) -> int:
         return len(self.samples)
 
     def __getitem__(self, index: int) -> Tuple[Dict[str, torch.Tensor], Dict[str, torch.Tensor]]:
         sample = self.samples[index]
-        rgb = self._load_image(sample["rgb_image"])
-        ir = self._load_image(sample["ir_image"])
-
         target = self._load_target(sample)
-        rgb_h, rgb_w = rgb.shape[-2:]
-        ir_h, ir_w = ir.shape[-2:]
 
-        rgb_original_size = torch.as_tensor([rgb_h, rgb_w], dtype=torch.float32)
-        ir_original_size = torch.as_tensor([ir_h, ir_w], dtype=torch.float32)
+        rgb_original_size = target.pop("_rgb_original_size")
+        ir_original_size = target.pop("_ir_original_size")
+        rgb_h, rgb_w = int(rgb_original_size[0].item()), int(rgb_original_size[1].item())
+        ir_h, ir_w = int(ir_original_size[0].item()), int(ir_original_size[1].item())
 
-        rgb, rgb_scale = self._resize_image(rgb)
-        ir, ir_scale = self._resize_image(ir)
+        inputs = {"rgb_original_size": rgb_original_size}
+        if "camera_mono" in self.inputs:
+            rgb = self._load_image(sample["rgb_image"])
+            rgb, _ = self._resize_image(rgb)
+            rgb = rgb.movedim(0, -1)
+            inputs["camera_mono"] = rgb
+            inputs["camera_mono_shape"] = torch.as_tensor(rgb.shape)
 
-        inputs = {
-            "camera_mono": rgb.movedim(0, -1),
-            "ir_image": ir.movedim(0, -1),
-            "camera_mono_shape": torch.as_tensor(rgb.movedim(0, -1).shape),
-            "ir_image_shape": torch.as_tensor(ir.movedim(0, -1).shape),
-            "rgb_original_size": rgb_original_size,
-            "ir_original_size": ir_original_size,
-            "homography_rgb_to_ir": torch.from_numpy(self.homography).to(dtype=torch.float32),
-        }
+        if "ir_image" in self.inputs:
+            ir = self._load_image(sample["ir_image"])
+            ir, _ = self._resize_image(ir)
+            ir = ir.movedim(0, -1)
+            inputs["ir_image"] = ir
+            inputs["ir_image_shape"] = torch.as_tensor(ir.shape)
+            inputs["ir_original_size"] = ir_original_size
+            inputs["homography_rgb_to_ir"] = torch.from_numpy(self.homography).to(dtype=torch.float32)
 
         if target["boxes"].numel():
-            rgb_boxes = target["boxes"] * torch.as_tensor(
-                [rgb_scale[0], rgb_scale[1], rgb_scale[0], rgb_scale[1]],
-                dtype=torch.float32,
-            )
-            ir_boxes = target["ir_boxes"] * torch.as_tensor(
-                [ir_scale[0], ir_scale[1], ir_scale[0], ir_scale[1]],
-                dtype=torch.float32,
-            )
-            target["boxes"] = self._normalize_xyxy(rgb_boxes, rgb.shape[-1], rgb.shape[-2])
-            target["ir_boxes"] = self._normalize_xyxy(ir_boxes, ir.shape[-1], ir.shape[-2])
+            target["boxes"] = self._normalize_xyxy(target["boxes"], rgb_w, rgb_h)
+            target["ir_boxes"] = self._normalize_xyxy(target["ir_boxes"], max(ir_w, 1), max(ir_h, 1))
             target["boxes_cxcywh"] = xyxy_to_cxcywh(target["boxes"])
             target["ir_boxes_cxcywh"] = xyxy_to_cxcywh(target["ir_boxes"])
         else:
             target["boxes_cxcywh"] = target["boxes"]
             target["ir_boxes_cxcywh"] = target["ir_boxes"]
 
+        if self.inputs == ["ir_image"]:
+            target = self._filter_ir_only_target(target)
+
         target["image_id"] = torch.as_tensor(sample["index"], dtype=torch.long)
         return inputs, target
+
+    @staticmethod
+    def _filter_ir_only_target(target: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+        valid = target["ir_valid"]
+        return {
+            key: value[valid]
+            if value.ndim > 0 and value.shape[0] == valid.shape[0]
+            else value
+            for key, value in target.items()
+        }
 
     def _normalize_categories(self, categories: Dict[str, int] | None) -> Dict[str, int]:
         if categories:
@@ -229,9 +239,9 @@ class LHPairsDataset(Dataset):
 
         sample_dirs = sorted(
             path for path in split_dir.glob("*/*/data_*")
-            if (path / "visible.jpg").exists()
-            and (path / "infrared.jpg").exists()
-            and (path / "label.json").exists()
+            if (path / "label.json").exists()
+            and ("camera_mono" not in self.inputs or (path / "visible.jpg").exists())
+            and ("ir_image" not in self.inputs or (path / "infrared.jpg").exists())
         )
         if not sample_dirs:
             return None
@@ -243,11 +253,13 @@ class LHPairsDataset(Dataset):
             if meta_path.exists():
                 with open(meta_path, "r", encoding="utf-8") as f:
                     meta = json.load(f)
+            rgb_image = sample_dir / "visible.jpg"
+            ir_image = sample_dir / "infrared.jpg"
             samples.append({
                 "index": len(samples),
                 "json": sample_dir / "label.json",
-                "rgb_image": sample_dir / "visible.jpg",
-                "ir_image": sample_dir / "infrared.jpg",
+                "rgb_image": rgb_image if rgb_image.exists() else None,
+                "ir_image": ir_image if ir_image.exists() else None,
                 "meta": meta,
                 "day": meta.get("day", sample_dir.parent.parent.name),
                 "segment": meta.get("segment", ""),
@@ -264,30 +276,44 @@ class LHPairsDataset(Dataset):
 
         segment_entries = []
         for entry in manifest:
-            if not entry.get("has_visible_label_dir") or not entry.get("has_infrared_dir"):
+            if not entry.get("has_visible_label_dir"):
                 continue
             label_dir = Path(entry["visible_label_dir"])
             source_segment = Path(entry["segment_source"])
             rgb_dir = source_segment / "images" / self.visible_dir_name
             ir_dir = source_segment / "images" / self.infrared_dir_name
-            if not label_dir.exists() or not rgb_dir.exists() or not ir_dir.exists():
+            if not label_dir.exists():
+                continue
+            if "camera_mono" in self.inputs and not rgb_dir.exists():
+                continue
+            if "ir_image" in self.inputs and (not entry.get("has_infrared_dir") or not ir_dir.exists()):
                 continue
             segment_entries.append((entry, label_dir, rgb_dir, ir_dir))
 
         samples = []
         for entry, label_dir, rgb_dir, ir_dir in segment_entries:
-            ir_index = build_time_index(ir_dir)
+            ir_index = build_time_index(ir_dir) if ir_dir.exists() else []
             for json_path in sorted(label_dir.glob("*.json")):
                 source_time = parse_time(json_path)
                 if source_time is None:
                     continue
-                rgb_image = self._find_source_image(json_path, rgb_dir)
-                nearest = nearest_by_time(ir_index, source_time)
-                if rgb_image is None or nearest is None:
+                rgb_image = self._find_source_image(json_path, rgb_dir) if rgb_dir.exists() else None
+                if "camera_mono" in self.inputs and rgb_image is None:
                     continue
-                ir_image, diff = nearest
-                if diff > self.max_time_diff:
-                    continue
+
+                ir_image = None
+                if "ir_image" in self.inputs:
+                    nearest = nearest_by_time(ir_index, source_time)
+                    if nearest is None:
+                        continue
+                    ir_image, diff = nearest
+                    if diff > self.max_time_diff:
+                        continue
+                elif ir_index:
+                    nearest = nearest_by_time(ir_index, source_time)
+                    if nearest is not None and nearest[1] <= self.max_time_diff:
+                        ir_image = nearest[0]
+
                 samples.append({
                     "index": len(samples),
                     "json": json_path,
@@ -343,9 +369,18 @@ class LHPairsDataset(Dataset):
         with open(sample["json"], "r", encoding="utf-8") as f:
             data = json.load(f)
 
-        with torch.no_grad():
-            ir_image = read_image(str(sample["ir_image"]))
-        ir_h, ir_w = ir_image.shape[-2:]
+        rgb_w = int(data.get("imageWidth") or 0)
+        rgb_h = int(data.get("imageHeight") or 0)
+        if (rgb_h <= 0 or rgb_w <= 0) and sample.get("rgb_image") is not None:
+            with torch.no_grad():
+                rgb_image = read_image(str(sample["rgb_image"]))
+            rgb_h, rgb_w = rgb_image.shape[-2:]
+
+        ir_h, ir_w = 1, 1
+        if sample.get("ir_image") is not None:
+            with torch.no_grad():
+                ir_image = read_image(str(sample["ir_image"]))
+            ir_h, ir_w = ir_image.shape[-2:]
 
         boxes, ir_boxes, ir_valid, labels = [], [], [], []
         for shape in data.get("shapes", []):
@@ -374,6 +409,8 @@ class LHPairsDataset(Dataset):
                 "ir_boxes": empty_boxes.clone(),
                 "ir_valid": torch.zeros((0,), dtype=torch.bool),
                 "labels": torch.zeros((0,), dtype=torch.long),
+                "_rgb_original_size": torch.as_tensor([rgb_h, rgb_w], dtype=torch.float32),
+                "_ir_original_size": torch.as_tensor([ir_h, ir_w], dtype=torch.float32),
             }
 
         return {
@@ -381,6 +418,8 @@ class LHPairsDataset(Dataset):
             "ir_boxes": torch.as_tensor(ir_boxes, dtype=torch.float32),
             "ir_valid": torch.as_tensor(ir_valid, dtype=torch.bool),
             "labels": torch.as_tensor(labels, dtype=torch.long),
+            "_rgb_original_size": torch.as_tensor([rgb_h, rgb_w], dtype=torch.float32),
+            "_ir_original_size": torch.as_tensor([ir_h, ir_w], dtype=torch.float32),
         }
 
 

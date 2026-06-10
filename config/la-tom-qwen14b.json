@@ -4,7 +4,7 @@
     "computing": {
         "dtype": "float32",
         "seed": 42,
-        "workers": 4,
+        "workers": 16,
         "device": "cuda:0"
     },
     "data": {
@@ -66,8 +66,8 @@
             "ir_image"
         ],
         "skiplinks": {
-            "camera_mono": false,
-            "ir_image": false
+            "camera_mono": true,
+            "ir_image": true
         },
         "imagenet_normalize": true,
         "backbones": {
@@ -93,6 +93,7 @@
             "camera_mono": {
                 "name": "FPN",
                 "in_channels_list": [
+                    3,
                     256,
                     512,
                     1024,
@@ -103,6 +104,7 @@
             "ir_image": {
                 "name": "FPN",
                 "in_channels_list": [
+                    3,
                     256,
                     512,
                     1024,
@@ -135,8 +137,8 @@
             "d_ffn": 32,
             "n_queries": 400,
             "n_levels": [
-                4,
-                4
+                5,
+                5
             ],
             "n_heads": [
                 1,
@@ -178,9 +180,7 @@
                 ],
                 "background_weight": 0.1,
                 "others_sample_ratio": 4
-            },
-            "bias": false,
-            "dropout": 0.0
+            }
         },
         "language_model": {
             "name": "qwen_14b",
@@ -188,6 +188,20 @@
             "enabled": false,
             "load_model": true,
             "keep_on_cpu": false
+        },
+        "embeddings": {
+            "camera_mono": {
+                "name": "sinusoidal_embedding",
+                "num_feats": 16,
+                "n_levels": 5,
+                "normalize": true
+            },
+            "ir_image": {
+                "name": "sinusoidal_embedding",
+                "num_feats": 16,
+                "n_levels": 5,
+                "normalize": true
+            }
         }
     },
     "evaluate": {
@@ -196,7 +210,7 @@
             "mAP": {
                 "name": "mAP2D",
                 "threshold": 0.5,
-                "score_threshold": 0.05
+                "score_threshold": 0.0
             }
         }
     }

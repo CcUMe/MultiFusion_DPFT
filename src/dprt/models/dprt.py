@@ -354,7 +354,10 @@ class DPRT(nn.Module):
         computing: Dict[str, Any] = config['computing']
         model: Dict[str, Any] = config['model']
         head = _build_module(build_head, 'head', model, computing)
-        fuser = _build_module(build_fuser, 'fuser', model, computing, head=head)
+        fuser = _build_module(
+            build_fuser, 'fuser', model, computing,
+            head=head, inputs=model.get('inputs')
+        )
         language_config = model.get('language_model')
         language_model = None
         if language_config and language_config.get('enabled', False):
@@ -393,21 +396,21 @@ class DPRT(nn.Module):
     def _get_projetions(inputs: List[str],
                         batch: Dict[str, torch.Tensor]) -> List[Tuple[torch.Tensor, torch.Tensor]]:
         if (
-            "homography_rgb_to_ir" in batch
-            and "rgb_original_size" in batch
-            and "ir_original_size" in batch
-            and inputs == ["camera_mono", "ir_image"]
+            "rgb_original_size" in batch
+            and set(inputs).issubset({"camera_mono", "ir_image"})
+            and ("ir_image" not in inputs or (
+                "homography_rgb_to_ir" in batch and "ir_original_size" in batch
+            ))
         ):
-            return [
-                {
-                    "homography": None,
-                    "original_size": batch["rgb_original_size"],
-                },
-                {
-                    "homography": batch["homography_rgb_to_ir"],
-                    "original_size": batch["ir_original_size"],
-                },
-            ]
+            projections = []
+            for input_name in inputs:
+                projections.append({
+                    "input_name": input_name,
+                    "homography": batch.get("homography_rgb_to_ir") if input_name == "ir_image" else None,
+                    "rgb_original_size": batch["rgb_original_size"],
+                    "original_size": batch["ir_original_size"] if input_name == "ir_image" else batch["rgb_original_size"],
+                })
+            return projections
         return [
             (batch[f'label_to_{input}_t'], batch[f'label_to_{input}_p'])
             for input in inputs
@@ -504,7 +507,7 @@ class DPRT(nn.Module):
                 pred_confidence_radar_bev: torch.Tensor = None,
                 pred_confidence_radar_front: torch.Tensor = None,
                 pred_confidence_lidar: torch.Tensor = None,
-                profile: bool = True) -> OrderedDict:
+                profile: bool = False) -> OrderedDict:
         """Returns the DPRT prediction based on the given input.
 
         Args:

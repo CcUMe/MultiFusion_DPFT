@@ -62,22 +62,13 @@
     "model": {
         "name": "dprt",
         "inputs": [
-            "camera_mono",
             "ir_image"
         ],
         "skiplinks": {
-            "camera_mono": true,
             "ir_image": true
         },
         "imagenet_normalize": true,
         "backbones": {
-            "camera_mono": {
-                "name": "ResNet101",
-                "weights": "IMAGENET1K_V2",
-                "multi_scale": 4,
-                "norm_layer": "BatchNorm2d",
-                "channel_last": true
-            },
             "ir_image": {
                 "name": "ResNet101",
                 "weights": "IMAGENET1K_V2",
@@ -90,17 +81,6 @@
             "enabled": false
         },
         "necks": {
-            "camera_mono": {
-                "name": "FPN",
-                "in_channels_list": [
-                    3,
-                    256,
-                    512,
-                    1024,
-                    2048
-                ],
-                "out_channels": 16
-            },
             "ir_image": {
                 "name": "FPN",
                 "in_channels_list": [
@@ -132,20 +112,17 @@
         "fuser": {
             "name": "rgb_ir_query_fusion",
             "i_iter": 3,
-            "m_views": 2,
+            "m_views": 1,
             "d_model": 16,
             "d_ffn": 32,
             "n_queries": 400,
             "n_levels": [
-                5,
                 5
             ],
             "n_heads": [
-                1,
                 1
             ],
             "n_points": [
-                1,
                 1
             ],
             "norm": true,
@@ -190,12 +167,6 @@
             "keep_on_cpu": true
         },
         "embeddings": {
-            "camera_mono": {
-                "name": "sinusoidal_embedding",
-                "num_feats": 16,
-                "n_levels": 5,
-                "normalize": true
-            },
             "ir_image": {
                 "name": "sinusoidal_embedding",
                 "num_feats": 16,

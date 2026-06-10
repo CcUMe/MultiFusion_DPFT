@@ -37,9 +37,9 @@ def _load_detector(checkpoint: str, config: Dict, device: torch.device) -> torch
     if isinstance(obj, torch.nn.Module):
         model = obj
     elif isinstance(obj, dict) and 'model_state_dict' in obj:
-        model.load_state_dict(obj['model_state_dict'], strict=False)
+        model.load_state_dict(obj['model_state_dict'], strict=True)
     elif isinstance(obj, dict):
-        model.load_state_dict(obj, strict=False)
+        model.load_state_dict(obj, strict=True)
     else:
         raise TypeError(f'Unsupported checkpoint type: {type(obj)}')
 

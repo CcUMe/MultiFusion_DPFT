@@ -121,7 +121,7 @@
             "mAP": {
                 "name": "mAP2D",
                 "threshold": 0.5,
-                "score_threshold": 0.05
+                "score_threshold": 0.0
             }
         }
     }
