@@ -1,0 +1,78 @@
+{
+  // 俯仰层选取相关配置
+  "pitch_selection": {
+    // 俯仰层选择策略:
+    // "dominant_count" = 选择当前完整扫描里样本数最多的俯仰层
+    // "fixed_value" = 固定选择 fixed_pitch_deg 指定的俯仰层
+    // "nearest_zero" = 选择最接近 0 度的俯仰层
+    "strategy": "fixed_value",
+
+    // 当 strategy = "fixed_value" 时使用。
+    // 含义: 目标俯仰角，单位是度。
+    // 程序会在实际存在的俯仰层里，选择最接近这个值的一层。
+    "fixed_pitch_deg": 3.0,
+
+    // 俯仰角量化步长，单位是度。
+    // 原始协议里的俯仰角可能有轻微浮动，这里会先按这个步长离散化。
+    // 例如 0.5 表示按 0.5 度栅格归并。
+    "quantization_step_deg": 0.5,
+
+    // 选择某一俯仰层时的容差，单位是度。
+    // 一个包的俯仰角与目标层差值小于等于该阈值时，就认为属于该层。
+    "selection_tolerance_deg": 0.11,
+
+    // 当 strategy = "dominant_count" 且多个俯仰层样本数相同时是否优先选更接近 0 度的层。
+    "prefer_nearest_zero_on_tie": true
+  },
+
+  // 中间结果与输出文件命名
+  "ra_output": {
+    // 图像与雷达扫描对齐后的映射 CSV 文件名
+    "mapping_csv_name": "image_to_antframe_time_aligned.csv",
+
+    // 包级别时间对齐结果 CSV 文件名
+    "packet_csv_name": "match_radar_camera_anchor.csv",
+
+    // 导出的雷达 npy 文件目录名。
+    // 当前导出的是 3D RAE 张量，shape = (range, azimuth, elevation_layer)
+    "ra_dir_name": "mmwave_ra_npy"
+  },
+
+  // 可视化输出相关配置
+  "visualization": {
+    // 总预览输出目录名
+    "preview_dir_name": "low_altitude_preview",
+
+    // 单独保存雷达热力图 PNG 的子目录名
+    "radar_subdir_name": "radar_fullframe",
+
+    // 保存“可见光图像 + 雷达图”并排结果的子目录名
+    "compare_subdir_name": "compare",
+
+    // 并排图中左图和右图之间的水平间距，单位像素
+    "side_by_side_gap_px": 24,
+
+    // 并排图四周留白边距，单位像素
+    "side_by_side_margin_px": 16,
+
+    // 并排图顶部标题文字区域高度，单位像素
+    "side_by_side_label_height_px": 72,
+
+    // 可视化时选择哪一层俯仰切片:
+    // "selected_pitch" = 使用导出阶段选中的代表层
+    // "middle" = 总是使用中间层
+    // "fixed_index" = 总是使用 fixed_layer_index 指定层
+    // "fixed_pitch_deg" = 按固定俯仰角选择，自动匹配当前帧最接近的一层
+    "layer_selection": "selected_pitch",
+
+    // 当 layer_selection = "fixed_index" 时使用，表示固定显示第几层，从 0 开始
+    "fixed_layer_index": 0,
+
+    // 当 layer_selection = "fixed_pitch_deg" 时使用，表示希望显示的目标俯仰角，单位是度
+    "fixed_pitch_deg": 0.0,
+
+    // 当所选层索引越界时的回退策略:
+    // "middle" / "first" / "last"
+    "layer_fallback": "middle"
+  }
+}
