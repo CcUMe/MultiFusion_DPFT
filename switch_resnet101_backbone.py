@@ -15,8 +15,8 @@ if str(SRC) not in sys.path:
 from dprt.models.backbones.resnet_custom import resnet101_custom
 
 
-VISUAL_INPUTS = {'camera_mono', 'ir_image', 'night_vision_image'}
-RADAR_LIDAR_INPUTS = {'radar_bev', 'radar_front', 'lidar_bev'}
+CUSTOM_INPUTS = {'camera_mono', 'ir_image', 'night_vision_image', 'radar_bev', 'radar_front', 'lidar_bev'}
+STANDARD_ONLY_INPUTS = set()
 STANDARD_BACKBONES = {
     'camera_mono': {'name': 'ResNet101', 'weights': 'IMAGENET1K_V2'},
     'ir_image': {'name': 'ResNet101', 'weights': 'IMAGENET1K_V2'},
@@ -118,11 +118,11 @@ def replace_backbones(config, target):
             backbone['weights'] = standard_spec['weights']
             selected_outputs = STANDARD_OUTPUTS[standard_spec['name']]
         else:
-            if key in VISUAL_INPUTS:
+            if key in CUSTOM_INPUTS:
                 backbone['name'] = 'ResNet101-c'
                 backbone['weights'] = None
                 selected_outputs = custom_outputs
-            elif key in RADAR_LIDAR_INPUTS:
+            elif key in STANDARD_ONLY_INPUTS:
                 standard_spec = STANDARD_BACKBONES.get(key)
                 backbone['name'] = standard_spec['name']
                 backbone['weights'] = standard_spec['weights']

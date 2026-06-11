@@ -1,7 +1,7 @@
 {
     "dataset": "lh_pairs",
     "task": "2d_detection",
-    "params_only": false,
+    "params_only": true,
     "computing": {
         "dtype": "float32",
         "seed": 42,
@@ -280,7 +280,7 @@
         "language_model": {
             "name": "qwen_7b",
             "model_id": "/mnt/disk1/zhangzhibin/models/Qwen-7B",
-            "enabled": false,
+            "enabled": true,
             "load_model": true,
             "keep_on_cpu": true,
             "cache_dir": "/mnt/disk1/zhangzhibin/models",

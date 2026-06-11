@@ -3,7 +3,7 @@ import datetime
 import os.path as osp
 
 import os
-os.environ.setdefault('CUDA_VISIBLE_DEVICES', '0')
+os.environ.setdefault('CUDA_VISIBLE_DEVICES', '2')
 from dprt.datasets import init as init_dataset
 from dprt.datasets import load as load_dataset
 from dprt.models import load_model
@@ -24,9 +24,13 @@ def _count_named_parameters(parameters):
     }
 
 
-def parameter_counts(module):
+def parameter_counts(module, fusion_only=False):
     if module is None:
         return {'total': 0, 'trainable': 0, 'frozen': 0}
+
+    named_parameters = list(module.named_parameters())
+    if not fusion_only:
+        return _count_named_parameters(named_parameters)
 
     fused_inputs = set(getattr(module, 'fuser_inputs', []) or [])
     available_inputs = set(getattr(module, 'available_inputs', []) or [])
@@ -41,17 +45,16 @@ def parameter_counts(module):
             ])
         named_parameters = [
             (name, parameter)
-            for name, parameter in module.named_parameters()
+            for name, parameter in named_parameters
             if not any(name.startswith(prefix) for prefix in excluded_prefixes)
         ]
-        return _count_named_parameters(named_parameters)
 
-    return _count_named_parameters(list(module.named_parameters()))
+    return _count_named_parameters(named_parameters)
 
 
-def print_parameter_counts(model, confidence=None):
+def print_parameter_counts(model, confidence=None, fusion_only=False):
     language_model = getattr(model, 'language_model', None)
-    core_total = parameter_counts(model)
+    core_total = parameter_counts(model, fusion_only=fusion_only)
     language_counts = parameter_counts(language_model)
 
     core_counts = {
