@@ -1,6 +1,7 @@
 {
     "dataset": "lh_pairs",
     "task": "2d_detection",
+    "params_only": false,
     "computing": {
         "dtype": "float32",
         "seed": 42,
@@ -64,14 +65,17 @@
         "inputs": [
             "ir_image"
         ],
+        "input_enable": {
+            "ir_image": true
+        },
         "skiplinks": {
             "ir_image": true
         },
         "imagenet_normalize": true,
         "backbones": {
             "ir_image": {
-                "name": "ResNet101-c",
-                "weights": null,
+                "name": "ResNet101",
+                "weights": "IMAGENET1K_V2",
                 "multi_scale": 4,
                 "norm_layer": "BatchNorm2d",
                 "channel_last": true
@@ -85,10 +89,10 @@
                 "name": "FPN",
                 "in_channels_list": [
                     3,
-                    896,
-                    1792,
-                    3584,
-                    7168
+                    256,
+                    512,
+                    1024,
+                    2048
                 ],
                 "out_channels": 16
             }
@@ -161,11 +165,15 @@
             }
         },
         "language_model": {
-            "name": "qwen_14b",
-            "model_id": "Qwen/Qwen2.5-14B-Instruct",
+            "name": "qwen_7b",
+            "model_id": "/mnt/disk1/zhangzhibin/models/Qwen-7B",
             "enabled": false,
-            "load_model": false,
-            "keep_on_cpu": true
+            "load_model": true,
+            "keep_on_cpu": true,
+            "cache_dir": "/mnt/disk1/zhangzhibin/models",
+            "mode": "passthrough",
+            "reasoning_enabled": false,
+            "attach_metadata": false
         },
         "embeddings": {
             "ir_image": {
@@ -174,9 +182,6 @@
                 "n_levels": 5,
                 "normalize": true
             }
-        },
-        "input_enable": {
-            "ir_image": true
         }
     },
     "evaluate": {
@@ -188,6 +193,5 @@
                 "score_threshold": 0.0
             }
         }
-    },
-    "params_only": false
+    }
 }
