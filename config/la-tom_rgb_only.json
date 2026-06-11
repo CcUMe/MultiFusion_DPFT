@@ -32,9 +32,9 @@
         "subset": null
     },
     "train": {
-        "batch_size": 1,
+        "batch_size": 8,
         "shuffle": true,
-        "epochs": 250,
+        "epochs": 200,
         "logging": "epoch",
         "criterion": "TwoDBAGSSetCriterion",
         "cost_class": 1.0,
@@ -42,12 +42,12 @@
         "cost_giou": 1.0,
         "optimizer": {
             "name": "AdamW",
-            "lr": 0.0001,
+            "lr": 0.0002,
             "weight_decay": 0.01
         },
         "scheduler": {
             "name": "CosineAnnealingLR",
-            "T_max": 180,
+            "T_max": 200,
             "eta_min": 1e-05
         },
         "background_weight": 0.1,
@@ -70,8 +70,8 @@
         "imagenet_normalize": true,
         "backbones": {
             "camera_mono": {
-                "name": "ResNet101",
-                "weights": "IMAGENET1K_V2",
+                "name": "ResNet101-c",
+                "weights": null,
                 "multi_scale": 4,
                 "norm_layer": "BatchNorm2d",
                 "channel_last": true
@@ -85,10 +85,10 @@
                 "name": "FPN",
                 "in_channels_list": [
                     3,
-                    256,
-                    512,
-                    1024,
-                    2048
+                    896,
+                    1792,
+                    3584,
+                    7168
                 ],
                 "out_channels": 16
             }
@@ -128,7 +128,10 @@
             "norm": true,
             "dropout": 0.2,
             "reduction": "weighted",
-            "activation": "Mish"
+            "activation": "Mish",
+            "inputs": [
+                "camera_mono"
+            ]
         },
         "head": {
             "name": "bags_2d_detection_head",
@@ -144,15 +147,13 @@
                     ],
                     [
                         2,
+                        4,
                         5
                     ],
                     [
-                        4,
+                        3,
                         1,
                         6
-                    ],
-                    [
-                        3
                     ]
                 ],
                 "background_weight": 0.1,
@@ -173,6 +174,9 @@
                 "n_levels": 5,
                 "normalize": true
             }
+        },
+        "input_enable": {
+            "camera_mono": true
         }
     },
     "evaluate": {
@@ -184,5 +188,6 @@
                 "score_threshold": 0.0
             }
         }
-    }
+    },
+    "params_only": false
 }

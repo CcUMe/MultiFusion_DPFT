@@ -2,7 +2,7 @@ import json
 import os
 import os.path as osp
 
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 
 def load_config(file: str) -> Dict:
@@ -47,3 +47,17 @@ def save_config(config: Dict[str, Any], filename: str) -> None:
     # Save configuration
     with open(filename, 'w') as f:
         json.dump(config, f, indent=4)
+
+
+def get_active_inputs(model_config: Dict[str, Any]) -> List[str]:
+    """Returns the active model inputs based on the config switches."""
+    inputs = list(model_config.get('inputs') or [])
+    input_enable = model_config.get('input_enable') or {}
+
+    if not input_enable:
+        return inputs
+
+    active_inputs = [input_name for input_name in inputs if input_enable.get(input_name, True)]
+    if not active_inputs:
+        raise ValueError('No active inputs found. Please enable at least one model input.')
+    return active_inputs

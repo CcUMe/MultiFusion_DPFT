@@ -7,16 +7,9 @@ import torch
 from torch import nn
 
 
-class Qwen3VL8BAdapter(nn.Module):
-    """Reserved Qwen3-VL-8B stage that keeps DPRT predictions unchanged.
-
-    The adapter is intentionally non-generative by default. It gives the model
-    graph a stable language-model extension point while preserving the detector
-    output contract for training and evaluation.
-    """
-
+class QwenTextAdapter(nn.Module):
     def __init__(self,
-                 model_id: str = "Qwen/Qwen3-VL-8B-Instruct",
+                 model_id: str = "Qwen/Qwen-7B",
                  enabled: bool = False,
                  mode: str = "passthrough",
                  load_model: bool = False,
@@ -27,7 +20,7 @@ class Qwen3VL8BAdapter(nn.Module):
         super().__init__()
 
         if mode not in {"passthrough", "metadata"}:
-            raise ValueError(f"Unsupported Qwen3-VL adapter mode: {mode}")
+            raise ValueError(f"Unsupported Qwen text adapter mode: {mode}")
 
         self.model_id = model_id
         self.enabled = enabled
@@ -39,7 +32,7 @@ class Qwen3VL8BAdapter(nn.Module):
         self.extra_config = dict(kwargs)
         self.last_context: Dict[str, Any] = {}
 
-        self.processor = None
+        self.tokenizer = None
         self.language_model = None
         if self.enabled and self.load_model:
             self._load_backbone()
@@ -73,24 +66,24 @@ class Qwen3VL8BAdapter(nn.Module):
 
     def _load_backbone(self) -> None:
         try:
-            from transformers import AutoModel, AutoProcessor
+            from transformers import AutoModelForCausalLM, AutoTokenizer
         except ImportError as exc:
             raise ImportError(
-                "Qwen3VL8BAdapter requires transformers when load_model=True. "
+                "QwenTextAdapter requires transformers when load_model=True. "
                 "Install transformers or keep load_model=False for the reserved "
                 "passthrough stage."
             ) from exc
 
-        self.processor = AutoProcessor.from_pretrained(
+        self.tokenizer = AutoTokenizer.from_pretrained(
             self.model_id,
             cache_dir=self.cache_dir,
-            trust_remote_code=True
+            trust_remote_code=True,
         )
         torch_dtype = self.extra_config.get("torch_dtype", "auto")
         if isinstance(torch_dtype, str) and torch_dtype != "auto" and hasattr(torch, torch_dtype):
             torch_dtype = getattr(torch, torch_dtype)
 
-        self.language_model = AutoModel.from_pretrained(
+        self.language_model = AutoModelForCausalLM.from_pretrained(
             self.model_id,
             cache_dir=self.cache_dir,
             trust_remote_code=True,
@@ -134,7 +127,7 @@ class Qwen3VL8BAdapter(nn.Module):
         }
 
         if self.attach_metadata and isinstance(out, MutableMapping):
-            out["_qwen3_vl"] = {
+            out["_qwen_text"] = {
                 "model_id": self.model_id,
                 "mode": self.mode,
                 "cache_dir": self.cache_dir,
@@ -144,9 +137,9 @@ class Qwen3VL8BAdapter(nn.Module):
         return out
 
 
-def build_qwen3_vl_adapter(config: Dict[str, Any]) -> Qwen3VL8BAdapter:
-    return Qwen3VL8BAdapter(
-        model_id=config.get("model_id", "Qwen/Qwen3-VL-8B-Instruct"),
+def build_qwen_text_adapter(config: Dict[str, Any]) -> QwenTextAdapter:
+    return QwenTextAdapter(
+        model_id=config.get("model_id", "Qwen/Qwen-7B"),
         enabled=config.get("enabled", False),
         mode=config.get("mode", "passthrough"),
         load_model=config.get("load_model", False),

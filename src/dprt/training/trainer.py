@@ -128,16 +128,65 @@ class CentralizedTrainer():
         return {k: v.to(device) for k, v in data.items()}
 
     @staticmethod
-    def _parameter_counts(module: torch.nn.Module | None) -> Dict[str, int]:
-        if module is None:
-            return {'total': 0, 'trainable': 0, 'frozen': 0}
-        total = sum(p.numel() for p in module.parameters())
-        trainable = sum(p.numel() for p in module.parameters() if p.requires_grad)
+    def _checkpoint_excluded_prefixes(model: torch.nn.Module) -> List[str]:
+        active_inputs = set(getattr(model, 'inputs', []) or [])
+        available_inputs = set(getattr(model, 'available_inputs', []) or [])
+        inactive_inputs = sorted(available_inputs - active_inputs)
+        prefixes = []
+        for input_name in inactive_inputs:
+            prefixes.extend([
+                f'backbones.{input_name}.',
+                f'necks.{input_name}.',
+                f'embeddings.{input_name}.',
+            ])
+        return prefixes
+
+    @classmethod
+    def _checkpoint_model_state_dict(cls, model: torch.nn.Module) -> Dict[str, torch.Tensor]:
+        state_dict = model.state_dict()
+        excluded_prefixes = cls._checkpoint_excluded_prefixes(model)
+        if not excluded_prefixes:
+            return state_dict
+        return {
+            key: value
+            for key, value in state_dict.items()
+            if not any(key.startswith(prefix) for prefix in excluded_prefixes)
+        }
+
+    @staticmethod
+    def _count_named_parameters(parameters: List[tuple[str, torch.nn.Parameter]]) -> Dict[str, int]:
+        total = sum(parameter.numel() for _, parameter in parameters)
+        trainable = sum(parameter.numel() for _, parameter in parameters if parameter.requires_grad)
         return {
             'total': total,
             'trainable': trainable,
             'frozen': total - trainable,
         }
+
+    @classmethod
+    def _parameter_counts(cls, module: torch.nn.Module | None) -> Dict[str, int]:
+        if module is None:
+            return {'total': 0, 'trainable': 0, 'frozen': 0}
+
+        fused_inputs = set(getattr(module, 'fuser_inputs', []) or [])
+        available_inputs = set(getattr(module, 'available_inputs', []) or [])
+        if fused_inputs and available_inputs:
+            excluded_inputs = sorted(available_inputs - fused_inputs)
+            excluded_prefixes = []
+            for input_name in excluded_inputs:
+                excluded_prefixes.extend([
+                    f'backbones.{input_name}.',
+                    f'necks.{input_name}.',
+                    f'embeddings.{input_name}.',
+                ])
+            named_parameters = [
+                (name, parameter)
+                for name, parameter in module.named_parameters()
+                if not any(name.startswith(prefix) for prefix in excluded_prefixes)
+            ]
+            return cls._count_named_parameters(named_parameters)
+
+        return cls._count_named_parameters(list(module.named_parameters()))
 
     @classmethod
     def _print_parameter_counts(cls,
@@ -493,7 +542,9 @@ class CentralizedTrainer():
         return epoch_metrics
 
     def train(self, model: torch.nn.Module, data_loader: Iterable, val_loader: Iterable = None,
-              start_epoch: int = 0, timestamp: str = None, dst: str = None) -> None:
+              start_epoch: int = 0, timestamp: str = None, dst: str = None,
+              optimizer_state_dict: Dict[str, Any] = None,
+              scheduler_state_dict: Dict[str, Any] = None) -> None:
         # Load model and loss function (to device)
         model.to(self.device)
         self.loss_fn.to(self.device)
@@ -519,9 +570,13 @@ class CentralizedTrainer():
 
         # Parameterize optimizer
         optimizer = self.optimizer(model.parameters())
+        if optimizer_state_dict is not None:
+            optimizer.load_state_dict(optimizer_state_dict)
 
         # Pass optimizer to learning rate scheduler
         scheduler = self.scheduler(optimizer)
+        if scheduler_state_dict is not None:
+            scheduler.load_state_dict(scheduler_state_dict)
 
         # Initialize progressbar iterator
         tbar = trange(start_epoch, self.epochs, initial=start_epoch, total=self.epochs)
@@ -559,8 +614,15 @@ class CentralizedTrainer():
             # Save checkpoint
             path = osp.join(dst, timestamp, 'checkpoints',
                             f"{timestamp}_checkpoint_{str(epoch).zfill(4)}.pt")
-            # torch.save(model, path)
-            torch.save(model.state_dict(), path)
+            torch.save({
+                'epoch': epoch,
+                'timestamp': timestamp,
+                'active_inputs': list(getattr(model, 'inputs', []) or []),
+                'excluded_state_prefixes': self._checkpoint_excluded_prefixes(model),
+                'model_state_dict': self._checkpoint_model_state_dict(model),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'scheduler_state_dict': scheduler.state_dict(),
+            }, path)
 
         # Flush and close writer
         if self.logging is not None:

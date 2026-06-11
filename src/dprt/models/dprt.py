@@ -286,6 +286,7 @@ from dprt.models.queries import build_querent
 from dprt.models.fusers import build_fuser
 from dprt.models.heads import build_head
 from dprt.models.language_models import build_language_model
+from dprt.utils.config import get_active_inputs
 
 
 def _build_module(build_fn: Callable, module_name: str,
@@ -316,6 +317,8 @@ def _build_modules(build_fn: Callable, module_name: str,
 class DPRT(nn.Module):
     def __init__(self,
                  inputs: List[str],
+                 available_inputs: List[str] = None,
+                 fuser_inputs: List[str] = None,
                  skiplinks: Dict[str, bool] = None,
                  backbones: Dict[str, nn.Module] = None,
                  necks: Dict[str, nn.Module] = None,
@@ -329,15 +332,17 @@ class DPRT(nn.Module):
         super().__init__()
 
         self.inputs = inputs
+        self.available_inputs = available_inputs if available_inputs is not None else inputs
+        self.fuser_inputs = fuser_inputs if fuser_inputs is not None else inputs
         self.skiplinks = skiplinks if skiplinks is not None else {}
         self.backbones = backbones if backbones is not None else {}
         self.necks = necks if necks is not None else {}
         self.embeddings = embeddings if embeddings is not None else {}
 
-        self.skiplinks = {input: self.skiplinks.get(input, False) for input in inputs}
-        self.backbones = self._init_unspecified(self.backbones)
-        self.necks = self._init_unspecified(self.necks)
-        self.embeddings = self._init_unspecified(self.embeddings)
+        self.skiplinks = {input: self.skiplinks.get(input, False) for input in self.available_inputs}
+        self.backbones = self._init_unspecified(self.backbones, self.available_inputs)
+        self.necks = self._init_unspecified(self.necks, self.available_inputs)
+        self.embeddings = self._init_unspecified(self.embeddings, self.available_inputs)
         self.querent = self._module_or_identity(querent)
         self.fuser = self._module_or_identity(fuser)
         self.head = self._module_or_identity(head)
@@ -353,10 +358,21 @@ class DPRT(nn.Module):
     def from_config(cls, config: Dict[str, Any]) -> DPRT:  # noqa: F821
         computing: Dict[str, Any] = config['computing']
         model: Dict[str, Any] = config['model']
+        inputs = get_active_inputs(model)
+        configured_fuser_inputs = model.get('fuser', {}).get('inputs')
+        if configured_fuser_inputs is None:
+            fuser_inputs = inputs
+        else:
+            fuser_inputs = [input_name for input_name in configured_fuser_inputs if input_name in inputs]
+            if not fuser_inputs:
+                raise ValueError(
+                    'No active fuser inputs remain after applying model.input_enable. '
+                    f'Configured fuser inputs: {configured_fuser_inputs}, active inputs: {inputs}.'
+                )
         head = _build_module(build_head, 'head', model, computing)
         fuser = _build_module(
             build_fuser, 'fuser', model, computing,
-            head=head, inputs=model.get('inputs')
+            head=head, inputs=fuser_inputs
         )
         language_config = model.get('language_model')
         language_model = None
@@ -365,7 +381,9 @@ class DPRT(nn.Module):
                 language_config.get('name', 'qwen_14b'), language_config
             )
         return cls(
-            inputs=model.get('inputs'),
+            inputs=inputs,
+            available_inputs=model.get('inputs'),
+            fuser_inputs=fuser_inputs,
             skiplinks=model.get('skiplinks'),
             backbones=_build_modules(build_backbone, 'backbones', model, computing),
             necks=_build_modules(build_neck, 'necks', model, computing),
@@ -376,9 +394,12 @@ class DPRT(nn.Module):
             language_model=language_model
         )
 
-    def _init_unspecified(self, submodule: Dict[str, nn.Module]) -> Dict[str, nn.Module]:
+    def _init_unspecified(self,
+                          submodule: Dict[str, nn.Module],
+                          input_names: List[str] = None) -> Dict[str, nn.Module]:
+        input_names = input_names if input_names is not None else self.inputs
         return nn.ModuleDict(
-            {input: self._module_or_identity(submodule.get(input)) for input in self.inputs}
+            {input: self._module_or_identity(submodule.get(input)) for input in input_names}
         )
 
     @staticmethod
@@ -619,9 +640,9 @@ class DPRT(nn.Module):
         # ── 7. Fuser ──────────────────────────────────────────────────
         t0 = self._sync_time() if profile else None
         out = self.fuser(
-            batch=[features[input] for input in self.inputs],
-            shape=[shapes[input][:, :2] for input in self.inputs],
-            projection=self._get_projetions(self.inputs, batch),
+            batch=[features[input] for input in self.fuser_inputs],
+            shape=[shapes[input][:, :2] for input in self.fuser_inputs],
+            projection=self._get_projetions(self.fuser_inputs, batch),
             out=out
         )
         if profile:

@@ -48,28 +48,42 @@ def build(model: str, *args, **kwargs):
 #     return model, epoch, timestamp
 
 def load_model(checkpoint, config):
-    filename = os.path.splitext(os.path.basename(checkpoint))[0]
-    parts = filename.split("_")
-    if len(parts) < 3:
-        raise ValueError(f"非法 checkpoint 文件名: {filename}")
-
-    timestamp = parts[0]
-    epoch = int(parts[-1])
-
     obj = torch.load(checkpoint, map_location="cpu")
+    if not isinstance(obj, dict) or 'model_state_dict' not in obj:
+        raise ValueError(
+            'Checkpoint format is outdated. Please restart training with the new full-checkpoint format.'
+        )
 
-    if isinstance(obj, torch.nn.Module):
-        model = obj
+    model_name = config.get("model", {}).get("name")
+    model = build(model_name, config)
+    if model is None:
+        raise ValueError(f"Unsupported model type in config: {model_name!r}")
 
-    elif isinstance(obj, dict):
-        model_name = config.get("model", {}).get("name")
-        model = build(model_name, config)
-        if model is None:
-            raise ValueError(f"Unsupported model type in config: {model_name!r}")
-        state_dict = obj.get("model_state_dict", obj)
-        model.load_state_dict(state_dict, strict=True)
+    excluded_state_prefixes = obj.get('excluded_state_prefixes') or []
+    strict = not excluded_state_prefixes
+    missing_keys, unexpected_keys = model.load_state_dict(obj['model_state_dict'], strict=strict)
+    if unexpected_keys:
+        raise ValueError(f'Unexpected checkpoint keys: {unexpected_keys}')
+    if excluded_state_prefixes:
+        invalid_missing = [
+            key for key in missing_keys
+            if not any(key.startswith(prefix) for prefix in excluded_state_prefixes)
+        ]
+        if invalid_missing:
+            raise ValueError(
+                'Checkpoint is missing unexpected model weights: ' + ', '.join(invalid_missing[:20])
+            )
+    epoch = int(obj.get('epoch', 0))
+    timestamp = obj.get('timestamp')
+    if not timestamp:
+        filename = os.path.splitext(os.path.basename(checkpoint))[0]
+        parts = filename.split("_")
+        if len(parts) < 3:
+            raise ValueError(f"非法 checkpoint 文件名: {filename}")
+        timestamp = parts[0]
 
-    else:
-        raise TypeError(f"Unsupported checkpoint type: {type(obj)}")
-
-    return model, epoch, timestamp
+    resume_state = {
+        'optimizer_state_dict': obj.get('optimizer_state_dict'),
+        'scheduler_state_dict': obj.get('scheduler_state_dict'),
+    }
+    return model, epoch, timestamp, resume_state

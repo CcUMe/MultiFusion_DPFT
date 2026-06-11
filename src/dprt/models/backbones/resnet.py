@@ -9,6 +9,8 @@ import torchvision
 from torch import nn
 from torchvision.models._utils import IntermediateLayerGetter
 
+from dprt.models.backbones.resnet_custom import resnet101_custom
+
 
 class BackboneBase(nn.Module):
     def __init__(self,
@@ -140,24 +142,33 @@ class Backbone(BackboneBase):
         return cls(**config)
 
     def _get_backbone(self, name: str, *args, **kwargs) -> nn.Module:
-        # Get backbone model
+        normalized_name = name.lower()
+
+        if normalized_name == 'resnet101-c':
+            if self.weights:
+                try:
+                    self.weights = torch.load(self.weights, map_location='cpu')
+                except Exception as e:
+                    raise ValueError(
+                        "ResNet101-c does not support torchvision preset weights. "
+                        "Please provide a local checkpoint path or leave weights empty."
+                    ) from e
+            return resnet101_custom(*args, **kwargs)
+
         try:
-            backbone = getattr(torchvision.models, name.lower())
+            backbone = getattr(torchvision.models, normalized_name)
         except AttributeError:
-            backbone = getattr(torch.nn, name.lower())
+            backbone = getattr(torch.nn, normalized_name)
         except Exception as e:
             raise e
 
         if not self.weights:
             return backbone(*args, **kwargs)
 
-        # Get pretrained model weights
         try:
-            # Load official weights
             weights = torchvision.models.get_weight(f"{name}_Weights.{self.weights}")
         except ValueError:
-            # Load custom weights
-            self.weights = torch.load(self.weights)
+            self.weights = torch.load(self.weights, map_location='cpu')
             return backbone(*args, **kwargs)
         except Exception as e:
             raise e

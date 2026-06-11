@@ -310,7 +310,9 @@ class RGBIRQueryFusion(nn.Module):
 
     @classmethod
     def from_config(cls, config: Dict[str, Any], **kwargs) -> 'RGBIRQueryFusion':
-        return cls(**config, **kwargs)
+        merged = dict(config)
+        merged.update(kwargs)
+        return cls(**merged)
 
     @staticmethod
     def _get_clones(module: nn.Module, n: int) -> nn.ModuleList:

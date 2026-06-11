@@ -17,6 +17,8 @@ from torch.utils.data import Dataset
 from torchvision.io import read_image
 from torchvision.transforms.functional import resize
 
+from dprt.utils.config import get_active_inputs
+
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"}
 TIME_RE = re.compile(r"_t(?P<time>\d+(?:\.\d+)?)")
@@ -138,6 +140,13 @@ class LHPairsDataset(Dataset):
         self.val_ratio = val_ratio
         self.dtype = dtype
         self.inputs = inputs if inputs is not None else ["camera_mono", "ir_image"]
+        unsupported_inputs = set(self.inputs) - {"camera_mono", "ir_image"}
+        if unsupported_inputs:
+            raise ValueError(
+                "LHPairsDataset currently supports only camera_mono and ir_image. "
+                f"Please disable {sorted(unsupported_inputs)} in model.input_enable "
+                "or extend the dataset loader with real modality data."
+            )
         self.label_aliases = {"building complex": "Building complex", "Building comlplex": "Building complex"}
         if label_aliases:
             self.label_aliases.update(label_aliases)
@@ -147,7 +156,7 @@ class LHPairsDataset(Dataset):
     @classmethod
     def from_config(cls, config: Dict[str, Any], *args, **kwargs) -> "LHPairsDataset":
         dataset_config = dict(config["computing"] | config["data"])
-        dataset_config["inputs"] = config.get("model", {}).get("inputs")
+        dataset_config["inputs"] = get_active_inputs(config.get("model", {}))
         return cls(*args, **dataset_config, **kwargs)
 
     def __len__(self) -> int:

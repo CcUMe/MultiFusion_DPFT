@@ -1,6 +1,7 @@
 {
     "dataset": "lh_pairs",
     "task": "2d_detection",
+    "params_only": false,
     "computing": {
         "dtype": "float32",
         "seed": 42,
@@ -63,11 +64,27 @@
         "name": "dprt",
         "inputs": [
             "camera_mono",
-            "ir_image"
+            "ir_image",
+            "night_vision_image",
+            "radar_bev",
+            "radar_front",
+            "lidar_bev"
         ],
+        "input_enable": {
+            "camera_mono": true,
+            "ir_image": true,
+            "radar_bev": false,
+            "radar_front": false,
+            "lidar_bev": false,
+            "night_vision_image": false
+        },
         "skiplinks": {
             "camera_mono": true,
-            "ir_image": true
+            "ir_image": true,
+            "radar_bev": true,
+            "radar_front": true,
+            "lidar_bev": true,
+            "night_vision_image": true
         },
         "imagenet_normalize": true,
         "backbones": {
@@ -79,6 +96,37 @@
                 "channel_last": true
             },
             "ir_image": {
+                "name": "ResNet101",
+                "weights": "IMAGENET1K_V2",
+                "multi_scale": 4,
+                "norm_layer": "BatchNorm2d",
+                "channel_last": true
+            },
+            "radar_bev": {
+                "name": "ResNet50",
+                "weights": "IMAGENET1K_V2",
+                "in_channels": 6,
+                "multi_scale": 4,
+                "norm_layer": "BatchNorm2d",
+                "channel_last": true
+            },
+            "radar_front": {
+                "name": "ResNet50",
+                "weights": "IMAGENET1K_V2",
+                "in_channels": 6,
+                "multi_scale": 4,
+                "norm_layer": "BatchNorm2d",
+                "channel_last": true
+            },
+            "lidar_bev": {
+                "name": "ResNet50",
+                "weights": "IMAGENET1K_V2",
+                "in_channels": 3,
+                "multi_scale": 4,
+                "norm_layer": "BatchNorm2d",
+                "channel_last": false
+            },
+            "night_vision_image": {
                 "name": "ResNet101",
                 "weights": "IMAGENET1K_V2",
                 "multi_scale": 4,
@@ -102,6 +150,51 @@
                 "out_channels": 16
             },
             "ir_image": {
+                "name": "FPN",
+                "in_channels_list": [
+                    3,
+                    256,
+                    512,
+                    1024,
+                    2048
+                ],
+                "out_channels": 16
+            },
+            "radar_bev": {
+                "name": "FPN",
+                "in_channels_list": [
+                    6,
+                    256,
+                    512,
+                    1024,
+                    2048
+                ],
+                "out_channels": 16
+            },
+            "radar_front": {
+                "name": "FPN",
+                "in_channels_list": [
+                    6,
+                    256,
+                    512,
+                    1024,
+                    2048
+                ],
+                "out_channels": 16
+            },
+            "lidar_bev": {
+                "name": "FPN",
+                "in_channels_list": [
+                    3,
+                    256,
+                    512,
+                    1024,
+                    2048
+                ],
+                "out_channels": 16,
+                "channel_last": false
+            },
+            "night_vision_image": {
                 "name": "FPN",
                 "in_channels_list": [
                     3,
@@ -151,7 +244,11 @@
             "norm": true,
             "dropout": 0.2,
             "reduction": "weighted",
-            "activation": "Mish"
+            "activation": "Mish",
+            "inputs": [
+                "camera_mono",
+                "ir_image"
+            ]
         },
         "head": {
             "name": "bags_2d_detection_head",
@@ -167,15 +264,13 @@
                     ],
                     [
                         2,
+                        4,
                         5
                     ],
                     [
-                        4,
+                        3,
                         1,
                         6
-                    ],
-                    [
-                        3
                     ]
                 ],
                 "background_weight": 0.1,
@@ -183,11 +278,15 @@
             }
         },
         "language_model": {
-            "name": "qwen_14b",
-            "model_id": "/mnt/disk1/zhangzhibin/models/Qwen2.5-14B-Instruct",
+            "name": "qwen_7b",
+            "model_id": "/mnt/disk1/zhangzhibin/models/Qwen-7B",
             "enabled": false,
             "load_model": true,
-            "keep_on_cpu": false
+            "keep_on_cpu": true,
+            "cache_dir": "/mnt/disk1/zhangzhibin/models",
+            "mode": "passthrough",
+            "reasoning_enabled": false,
+            "attach_metadata": false
         },
         "embeddings": {
             "camera_mono": {
@@ -197,6 +296,30 @@
                 "normalize": true
             },
             "ir_image": {
+                "name": "sinusoidal_embedding",
+                "num_feats": 16,
+                "n_levels": 5,
+                "normalize": true
+            },
+            "radar_bev": {
+                "name": "sinusoidal_embedding",
+                "num_feats": 16,
+                "n_levels": 5,
+                "normalize": true
+            },
+            "radar_front": {
+                "name": "sinusoidal_embedding",
+                "num_feats": 16,
+                "n_levels": 5,
+                "normalize": true
+            },
+            "lidar_bev": {
+                "name": "sinusoidal_embedding",
+                "num_feats": 16,
+                "n_levels": 5,
+                "normalize": true
+            },
+            "night_vision_image": {
                 "name": "sinusoidal_embedding",
                 "num_feats": 16,
                 "n_levels": 5,
