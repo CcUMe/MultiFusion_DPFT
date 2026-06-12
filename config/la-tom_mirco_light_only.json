@@ -33,7 +33,7 @@
         "subset": null
     },
     "train": {
-        "batch_size": 16,
+        "batch_size": 32,
         "shuffle": true,
         "epochs": 200,
         "logging": "epoch",
@@ -43,7 +43,7 @@
         "cost_giou": 1.0,
         "optimizer": {
             "name": "AdamW",
-            "lr": 0.0001,
+            "lr": 0.0002,
             "weight_decay": 0.01
         },
         "scheduler": {
@@ -63,69 +63,16 @@
     "model": {
         "name": "dprt",
         "inputs": [
-            "camera_mono",
-            "ir_image",
-            "mirco_light",
-            "radar_bev",
-            "radar_front",
-            "lidar_bev"
+            "mirco_light"
         ],
         "input_enable": {
-            "camera_mono": true,
-            "ir_image": true,
-            "radar_bev": false,
-            "radar_front": false,
-            "lidar_bev": false,
             "mirco_light": true
         },
         "skiplinks": {
-            "camera_mono": true,
-            "ir_image": true,
-            "radar_bev": true,
-            "radar_front": true,
-            "lidar_bev": true,
             "mirco_light": true
         },
         "imagenet_normalize": true,
         "backbones": {
-            "camera_mono": {
-                "name": "ResNet101",
-                "weights": "IMAGENET1K_V2",
-                "multi_scale": 4,
-                "norm_layer": "BatchNorm2d",
-                "channel_last": true
-            },
-            "ir_image": {
-                "name": "ResNet101",
-                "weights": "IMAGENET1K_V2",
-                "multi_scale": 4,
-                "norm_layer": "BatchNorm2d",
-                "channel_last": true
-            },
-            "radar_bev": {
-                "name": "ResNet50",
-                "weights": "IMAGENET1K_V2",
-                "in_channels": 6,
-                "multi_scale": 4,
-                "norm_layer": "BatchNorm2d",
-                "channel_last": true
-            },
-            "radar_front": {
-                "name": "ResNet50",
-                "weights": "IMAGENET1K_V2",
-                "in_channels": 6,
-                "multi_scale": 4,
-                "norm_layer": "BatchNorm2d",
-                "channel_last": true
-            },
-            "lidar_bev": {
-                "name": "ResNet50",
-                "weights": "IMAGENET1K_V2",
-                "in_channels": 3,
-                "multi_scale": 4,
-                "norm_layer": "BatchNorm2d",
-                "channel_last": false
-            },
             "mirco_light": {
                 "name": "ResNet101",
                 "weights": "IMAGENET1K_V2",
@@ -138,62 +85,6 @@
             "enabled": false
         },
         "necks": {
-            "camera_mono": {
-                "name": "FPN",
-                "in_channels_list": [
-                    3,
-                    256,
-                    512,
-                    1024,
-                    2048
-                ],
-                "out_channels": 16
-            },
-            "ir_image": {
-                "name": "FPN",
-                "in_channels_list": [
-                    3,
-                    256,
-                    512,
-                    1024,
-                    2048
-                ],
-                "out_channels": 16
-            },
-            "radar_bev": {
-                "name": "FPN",
-                "in_channels_list": [
-                    6,
-                    256,
-                    512,
-                    1024,
-                    2048
-                ],
-                "out_channels": 16
-            },
-            "radar_front": {
-                "name": "FPN",
-                "in_channels_list": [
-                    6,
-                    256,
-                    512,
-                    1024,
-                    2048
-                ],
-                "out_channels": 16
-            },
-            "lidar_bev": {
-                "name": "FPN",
-                "in_channels_list": [
-                    3,
-                    256,
-                    512,
-                    1024,
-                    2048
-                ],
-                "out_channels": 16,
-                "channel_last": false
-            },
             "mirco_light": {
                 "name": "FPN",
                 "in_channels_list": [
@@ -225,23 +116,17 @@
         "fuser": {
             "name": "rgb_ir_query_fusion",
             "i_iter": 3,
-            "m_views": 3,
+            "m_views": 1,
             "d_model": 16,
             "d_ffn": 32,
             "n_queries": 400,
             "n_levels": [
-                5,
-                5,
                 5
             ],
             "n_heads": [
-                1,
-                1,
                 1
             ],
             "n_points": [
-                1,
-                1,
                 1
             ],
             "norm": true,
@@ -249,8 +134,6 @@
             "reduction": "weighted",
             "activation": "Mish",
             "inputs": [
-                "camera_mono",
-                "ir_image",
                 "mirco_light"
             ]
         },
@@ -293,36 +176,6 @@
             "attach_metadata": false
         },
         "embeddings": {
-            "camera_mono": {
-                "name": "sinusoidal_embedding",
-                "num_feats": 16,
-                "n_levels": 5,
-                "normalize": true
-            },
-            "ir_image": {
-                "name": "sinusoidal_embedding",
-                "num_feats": 16,
-                "n_levels": 5,
-                "normalize": true
-            },
-            "radar_bev": {
-                "name": "sinusoidal_embedding",
-                "num_feats": 16,
-                "n_levels": 5,
-                "normalize": true
-            },
-            "radar_front": {
-                "name": "sinusoidal_embedding",
-                "num_feats": 16,
-                "n_levels": 5,
-                "normalize": true
-            },
-            "lidar_bev": {
-                "name": "sinusoidal_embedding",
-                "num_feats": 16,
-                "n_levels": 5,
-                "normalize": true
-            },
             "mirco_light": {
                 "name": "sinusoidal_embedding",
                 "num_feats": 16,

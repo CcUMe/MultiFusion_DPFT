@@ -20,7 +20,7 @@ from torchvision.ops import nms
 from dprt.datasets import init as init_dataset
 from dprt.datasets.loader import listed_collating
 from dprt.evaluation.metric import mAP2D
-from dprt.models import build as build_model
+from dprt.models import load_model
 from dprt.utils.config import load_config
 from dprt.utils.misc import set_seed
 
@@ -31,18 +31,11 @@ TEXT_BG = (0, 0, 0)
 
 
 def _load_detector(checkpoint: str, config: Dict, device: torch.device) -> torch.nn.Module:
-    model = build_model(config['model']['name'], config)
-    obj = torch.load(checkpoint, map_location=device)
+    language_model = config.get('model', {}).get('language_model')
+    if language_model is not None:
+        language_model['enabled'] = False
 
-    if isinstance(obj, torch.nn.Module):
-        model = obj
-    elif isinstance(obj, dict) and 'model_state_dict' in obj:
-        model.load_state_dict(obj['model_state_dict'], strict=True)
-    elif isinstance(obj, dict):
-        model.load_state_dict(obj, strict=True)
-    else:
-        raise TypeError(f'Unsupported checkpoint type: {type(obj)}')
-
+    model, _, _, _ = load_model(checkpoint, config)
     model.to(device)
     model.eval()
     return model
@@ -199,16 +192,16 @@ def _metric_table(results: Dict[str, torch.Tensor], class_names: List[str]) -> s
 
 def main():
     parser = argparse.ArgumentParser('LH RGB/IR 2D detector test and visualization')
-    parser.add_argument('--src', default='/mnt/disk1/zhangzhibin/dataset/LH_pairs_dataset')
-    parser.add_argument('--cfg', default='/mnt/disk1/zhangzhibin/dpft_v4/config/la-tom.json')
+    parser.add_argument('--src', default='/mnt/disk1/zhangzhibin/dataset/LH_pairs_dataset_auto_v2')
+    parser.add_argument('--cfg', default='/mnt/disk1/zhangzhibin/dpft_v4/config/la-tom-qwen14b.json')
     parser.add_argument('--checkpoint', required=True)
     parser.add_argument('--dst', default='/mnt/disk1/zhangzhibin/test/2D-vis')
-    parser.add_argument('--split', default='val', choices=['train', 'val', 'test'])
+    parser.add_argument('--split', default='test', choices=['train', 'val', 'test'])
     parser.add_argument('--draw-size', choices=['original', 'resized'], default='original',
                         help='Draw boxes on original visible image or resized model input.')
     parser.add_argument('--batch-size', type=int, default=1)
-    parser.add_argument('--num-samples', type=int, default=100)
-    parser.add_argument('--score-threshold', type=float, default=0.25)
+    parser.add_argument('--num-samples', type=int, default=0)
+    parser.add_argument('--score-threshold', type=float, default=0.2)
     parser.add_argument('--nms-iou', type=float, default=0.5)
     parser.add_argument('--max-detections', type=int, default=100)
     parser.add_argument('--draw-gt', action='store_true', default=True)

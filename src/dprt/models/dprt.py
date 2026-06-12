@@ -416,22 +416,31 @@ class DPRT(nn.Module):
     @staticmethod
     def _get_projetions(inputs: List[str],
                         batch: Dict[str, torch.Tensor]) -> List[Tuple[torch.Tensor, torch.Tensor]]:
-        if (
-            "rgb_original_size" in batch
-            and set(inputs).issubset({"camera_mono", "ir_image"})
-            and ("ir_image" not in inputs or (
-                "homography_rgb_to_ir" in batch and "ir_original_size" in batch
-            ))
-        ):
+        projected_inputs = set(inputs) - {"camera_mono"}
+        if "rgb_original_size" in batch and set(inputs).issubset({"camera_mono", "ir_image", "mirco_light"}):
             projections = []
             for input_name in inputs:
+                if input_name == "camera_mono":
+                    projections.append({
+                        "input_name": input_name,
+                        "homography": None,
+                        "rgb_original_size": batch["rgb_original_size"],
+                        "original_size": batch["rgb_original_size"],
+                    })
+                    continue
+
+                homography_key = f"homography_rgb_to_{input_name}"
+                original_size_key = f"{input_name}_original_size"
+                if homography_key not in batch or original_size_key not in batch:
+                    break
                 projections.append({
                     "input_name": input_name,
-                    "homography": batch.get("homography_rgb_to_ir") if input_name == "ir_image" else None,
+                    "homography": batch[homography_key],
                     "rgb_original_size": batch["rgb_original_size"],
-                    "original_size": batch["ir_original_size"] if input_name == "ir_image" else batch["rgb_original_size"],
+                    "original_size": batch[original_size_key],
                 })
-            return projections
+            else:
+                return projections
         return [
             (batch[f'label_to_{input}_t'], batch[f'label_to_{input}_p'])
             for input in inputs
