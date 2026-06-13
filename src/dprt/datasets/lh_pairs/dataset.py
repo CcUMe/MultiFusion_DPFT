@@ -217,8 +217,12 @@ class LHPairsDataset(Dataset):
 
         if self.inputs == ["ir_image"]:
             target = self._filter_projected_only_target(target, "ir_valid")
+            target["boxes"] = target["ir_boxes"]
+            target["boxes_cxcywh"] = target["ir_boxes_cxcywh"]
         if self.inputs == ["mirco_light"]:
             target = self._filter_projected_only_target(target, "micro_valid")
+            target["boxes"] = target["micro_boxes"]
+            target["boxes_cxcywh"] = target["micro_boxes_cxcywh"]
 
         target["image_id"] = torch.as_tensor(sample["index"], dtype=torch.long)
         return inputs, target

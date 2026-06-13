@@ -29,6 +29,28 @@ PRED_COLOR = (0, 0, 255)
 GT_COLOR = (0, 200, 0)
 TEXT_BG = (0, 0, 0)
 
+DRAW_MODALITY_TO_SAMPLE_KEY = {
+    'camera_mono': 'rgb_image',
+    'ir_image': 'ir_image',
+    'mirco_light': 'mirco_light',
+}
+
+
+def _resolve_draw_modality(model_config: Dict, requested: str) -> str:
+    available = [name for name in model_config.get('inputs', []) if model_config.get('input_enable', {}).get(name, True)]
+    supported = [name for name in available if name in DRAW_MODALITY_TO_SAMPLE_KEY]
+    if requested != 'auto':
+        if requested not in supported:
+            raise ValueError(f'draw modality {requested!r} is not enabled in current config: {supported}')
+        return requested
+    if len(supported) == 1:
+        return supported[0]
+    if 'camera_mono' in supported:
+        return 'camera_mono'
+    if supported:
+        return supported[0]
+    raise ValueError(f'No drawable modality found in enabled inputs: {available}')
+
 
 def _load_detector(checkpoint: str, config: Dict, device: torch.device) -> torch.nn.Module:
     language_model = config.get('model', {}).get('language_model')
@@ -198,7 +220,8 @@ def main():
     parser.add_argument('--dst', default='/mnt/disk1/zhangzhibin/test/2D-vis')
     parser.add_argument('--split', default='test', choices=['train', 'val', 'test'])
     parser.add_argument('--draw-size', choices=['original', 'resized'], default='original',
-                        help='Draw boxes on original visible image or resized model input.')
+                        help='Draw boxes on original modality image or resized model input.')
+    parser.add_argument('--draw-modality', choices=['auto', 'camera_mono', 'ir_image', 'mirco_light'], default='auto')
     parser.add_argument('--batch-size', type=int, default=1)
     parser.add_argument('--num-samples', type=int, default=0)
     parser.add_argument('--score-threshold', type=float, default=0.2)
@@ -224,6 +247,8 @@ def main():
     loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=False, num_workers=0, collate_fn=listed_collating)
 
     names = _class_names(config['data']['categories'])
+    draw_modality = _resolve_draw_modality(config.get('model', {}), args.draw_modality)
+    sample_key = DRAW_MODALITY_TO_SAMPLE_KEY[draw_modality]
     model = _load_detector(args.checkpoint, config, device)
     metric = mAP2D(
         threshold=config.get('evaluate', {}).get('metrics', {}).get('mAP', {}).get('threshold', 0.5),
@@ -235,6 +260,7 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=True)
     print(f'Testing split={args.split}, samples={len(dataset)}, checkpoint={args.checkpoint}')
     print(f'Draw size: {args.draw_size}')
+    print(f'Draw modality: {draw_modality}')
     print(f'Visualizations will be saved to: {out_dir}')
 
     metric_inputs = []
@@ -259,12 +285,14 @@ def main():
 
                 image_id = int(target.get('image_id', torch.tensor(saved)).detach().cpu())
                 if args.draw_size == 'original' and hasattr(raw_dataset, 'samples') and image_id < len(raw_dataset.samples):
-                    image_path = raw_dataset.samples[image_id]['rgb_image']
-                    image = cv2.imread(str(image_path), cv2.IMREAD_COLOR)
+                    image_path = raw_dataset.samples[image_id].get(sample_key)
+                    image = None
+                    if image_path is not None:
+                        image = cv2.imread(str(image_path), cv2.IMREAD_COLOR)
                     if image is None:
-                        image = _tensor_image_to_bgr(batch['camera_mono'][sample_idx])
+                        image = _tensor_image_to_bgr(batch[draw_modality][sample_idx])
                 else:
-                    image = _tensor_image_to_bgr(batch['camera_mono'][sample_idx])
+                    image = _tensor_image_to_bgr(batch[draw_modality][sample_idx])
 
                 if args.draw_gt and target['boxes'].numel():
                     _draw_boxes(

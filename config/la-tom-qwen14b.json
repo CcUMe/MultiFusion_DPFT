@@ -10,7 +10,7 @@
     },
     "data": {
         "manifest": "/mnt/disk1/zhangzhibin/dataset/LH_pairs_dataset_auto_v2/scan_manifest.json",
-        "homography": "/mnt/disk1/zhangzhibin/draw/H.npy",
+        "homography": "//mnt/disk1/zhangzhibin/dpft_v4/matrix/H.npy",
         "image_size": 512,
         "max_time_diff": 0.25,
         "val_ratio": 0.2,
