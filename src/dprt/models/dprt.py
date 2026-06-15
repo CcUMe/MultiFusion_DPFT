@@ -417,7 +417,7 @@ class DPRT(nn.Module):
     def _get_projetions(inputs: List[str],
                         batch: Dict[str, torch.Tensor]) -> List[Tuple[torch.Tensor, torch.Tensor]]:
         projected_inputs = set(inputs) - {"camera_mono"}
-        if "rgb_original_size" in batch and set(inputs).issubset({"camera_mono", "ir_image", "mirco_light"}):
+        if "rgb_original_size" in batch and set(inputs).issubset({"camera_mono", "ir_image", "micro_light"}):
             projections = []
             for input_name in inputs:
                 if input_name == "camera_mono":

@@ -109,6 +109,21 @@ def xyxy_to_cxcywh(boxes: torch.Tensor) -> torch.Tensor:
     return torch.stack(((x1 + x2) * 0.5, (y1 + y2) * 0.5, x2 - x1, y2 - y1), dim=-1)
 
 
+def clamp_bbox_xyxy(
+    bbox: Tuple[float, float, float, float],
+    target_w: int,
+    target_h: int,
+) -> Tuple[float, float, float, float] | None:
+    x1, y1, x2, y2 = bbox
+    nx1 = clamp(float(x1), 0, target_w - 1)
+    ny1 = clamp(float(y1), 0, target_h - 1)
+    nx2 = clamp(float(x2), 0, target_w - 1)
+    ny2 = clamp(float(y2), 0, target_h - 1)
+    if nx2 <= nx1 or ny2 <= ny1:
+        return None
+    return nx1, ny1, nx2, ny2
+
+
 class LHPairsDataset(Dataset):
     def __init__(
         self,
@@ -119,11 +134,13 @@ class LHPairsDataset(Dataset):
         image_size: Union[int, Tuple[int, int]] = 512,
         visible_dir_name: str = "hikrobot_camera__DA8679037__image_raw",
         infrared_dir_name: str = "usb_ir__image_raw",
-        mirco_light_dir_name: str = "hikrobot_camera__DA8679038__image_raw",
+        micro_light_dir_name: str = "hikrobot_camera__DA8679038__image_raw",
         max_time_diff: float = 0.25,
         categories: Dict[str, int] | None = None,
         label_aliases: Dict[str, str] | None = None,
         inputs: List[str] | None = None,
+        label_reference_input: str = "camera_mono",
+        shared_label_inputs: List[str] | None = None,
         val_ratio: float = 0.2,
         dtype: str = "float32",
         **kwargs,
@@ -134,21 +151,32 @@ class LHPairsDataset(Dataset):
         self.manifest = manifest or osp.join(src, "scan_manifest.json")
         self.homography_path = homography
         self.homography = np.load(homography).astype(np.float64)
+        self.inverse_homography = np.linalg.inv(self.homography)
         self.image_size = (image_size, image_size) if isinstance(image_size, int) else image_size
         self.visible_dir_name = visible_dir_name
         self.infrared_dir_name = infrared_dir_name
-        self.mirco_light_dir_name = mirco_light_dir_name
+        self.micro_light_dir_name = micro_light_dir_name
         self.max_time_diff = max_time_diff
         self.val_ratio = val_ratio
         self.dtype = dtype
         self.inputs = inputs if inputs is not None else ["camera_mono", "ir_image"]
-        unsupported_inputs = set(self.inputs) - {"camera_mono", "ir_image", "mirco_light"}
+        self.label_reference_input = label_reference_input
+        self.shared_label_inputs = set(shared_label_inputs or [])
+        unsupported_inputs = set(self.inputs) - {"camera_mono", "ir_image", "micro_light"}
         if unsupported_inputs:
             raise ValueError(
-                "LHPairsDataset currently supports only camera_mono, ir_image, and mirco_light. "
+                "LHPairsDataset currently supports only camera_mono, ir_image, and micro_light. "
                 f"Please disable {sorted(unsupported_inputs)} in model.input_enable "
                 "or extend the dataset loader with real modality data."
             )
+        if self.label_reference_input not in {"camera_mono", "ir_image"}:
+            raise ValueError(
+                f"Unsupported label_reference_input={self.label_reference_input!r}. "
+                "Expected 'camera_mono' or 'ir_image'."
+            )
+        unsupported_shared = self.shared_label_inputs - {"camera_mono", "ir_image", "micro_light"}
+        if unsupported_shared:
+            raise ValueError(f"Unsupported shared_label_inputs: {sorted(unsupported_shared)}")
         self.label_aliases = {"building complex": "Building complex", "Building comlplex": "Building complex"}
         if label_aliases:
             self.label_aliases.update(label_aliases)
@@ -194,14 +222,14 @@ class LHPairsDataset(Dataset):
             inputs["homography_rgb_to_ir_image"] = torch.from_numpy(self.homography).to(dtype=torch.float32)
             inputs["homography_rgb_to_ir"] = inputs["homography_rgb_to_ir_image"]
 
-        if "mirco_light" in self.inputs:
-            micro = self._load_image(sample["mirco_light"])
+        if "micro_light" in self.inputs:
+            micro = self._load_image(sample["micro_light"])
             micro, _ = self._resize_image(micro)
             micro = micro.movedim(0, -1)
-            inputs["mirco_light"] = micro
-            inputs["mirco_light_shape"] = torch.as_tensor(micro.shape)
-            inputs["mirco_light_original_size"] = micro_original_size
-            inputs["homography_rgb_to_mirco_light"] = torch.from_numpy(self.homography).to(dtype=torch.float32)
+            inputs["micro_light"] = micro
+            inputs["micro_light_shape"] = torch.as_tensor(micro.shape)
+            inputs["micro_light_original_size"] = micro_original_size
+            inputs["homography_rgb_to_micro_light"] = torch.from_numpy(self.homography).to(dtype=torch.float32)
 
         if target["boxes"].numel():
             target["boxes"] = self._normalize_xyxy(target["boxes"], rgb_w, rgb_h)
@@ -219,7 +247,7 @@ class LHPairsDataset(Dataset):
             target = self._filter_projected_only_target(target, "ir_valid")
             target["boxes"] = target["ir_boxes"]
             target["boxes_cxcywh"] = target["ir_boxes_cxcywh"]
-        if self.inputs == ["mirco_light"]:
+        if self.inputs == ["micro_light"]:
             target = self._filter_projected_only_target(target, "micro_valid")
             target["boxes"] = target["micro_boxes"]
             target["boxes_cxcywh"] = target["micro_boxes_cxcywh"]
@@ -275,7 +303,7 @@ class LHPairsDataset(Dataset):
             if (path / "label.json").exists()
             and ("camera_mono" not in self.inputs or (path / "visible.jpg").exists())
             and ("ir_image" not in self.inputs or (path / "infrared.jpg").exists())
-            and ("mirco_light" not in self.inputs or (path / "micro.jpg").exists())
+            and ("micro_light" not in self.inputs or (path / "micro.jpg").exists())
         )
         if not sample_dirs:
             return None
@@ -295,7 +323,7 @@ class LHPairsDataset(Dataset):
                 "json": sample_dir / "label.json",
                 "rgb_image": rgb_image if rgb_image.exists() else None,
                 "ir_image": ir_image if ir_image.exists() else None,
-                "mirco_light": micro_image if micro_image.exists() else None,
+                "micro_light": micro_image if micro_image.exists() else None,
                 "meta": meta,
                 "day": meta.get("day", sample_dir.parent.parent.name),
                 "segment": meta.get("segment", ""),
@@ -318,14 +346,14 @@ class LHPairsDataset(Dataset):
             source_segment = Path(entry["segment_source"])
             rgb_dir = source_segment / "images" / self.visible_dir_name
             ir_dir = source_segment / "images" / self.infrared_dir_name
-            micro_dir = source_segment / "images" / self.mirco_light_dir_name
+            micro_dir = source_segment / "images" / self.micro_light_dir_name
             if not label_dir.exists():
                 continue
             if "camera_mono" in self.inputs and not rgb_dir.exists():
                 continue
             if "ir_image" in self.inputs and (not entry.get("has_infrared_dir") or not ir_dir.exists()):
                 continue
-            if "mirco_light" in self.inputs and not micro_dir.exists():
+            if "micro_light" in self.inputs and not micro_dir.exists():
                 continue
             segment_entries.append((entry, label_dir, rgb_dir, ir_dir, micro_dir))
 
@@ -355,7 +383,7 @@ class LHPairsDataset(Dataset):
                         ir_image = nearest[0]
 
                 micro_image = None
-                if "mirco_light" in self.inputs:
+                if "micro_light" in self.inputs:
                     nearest = nearest_by_time(micro_index, source_time)
                     if nearest is None:
                         continue
@@ -372,7 +400,7 @@ class LHPairsDataset(Dataset):
                     "json": json_path,
                     "rgb_image": rgb_image,
                     "ir_image": ir_image,
-                    "mirco_light": micro_image,
+                    "micro_light": micro_image,
                     "day": entry.get("day", ""),
                     "segment": entry.get("segment", ""),
                 })
@@ -437,9 +465,9 @@ class LHPairsDataset(Dataset):
             ir_h, ir_w = ir_image.shape[-2:]
 
         micro_h, micro_w = 1, 1
-        if sample.get("mirco_light") is not None:
+        if sample.get("micro_light") is not None:
             with torch.no_grad():
-                micro_image = read_image(str(sample["mirco_light"]))
+                micro_image = read_image(str(sample["micro_light"]))
             micro_h, micro_w = micro_image.shape[-2:]
 
         boxes, ir_boxes, ir_valid, micro_boxes, micro_valid, labels = [], [], [], [], [], []
@@ -452,21 +480,41 @@ class LHPairsDataset(Dataset):
             bbox = shape_bbox(shape)
             if bbox is None:
                 continue
-            projected = project_bbox_by_homography(bbox, self.homography, ir_w, ir_h)
-            projected_micro = project_bbox_by_homography(bbox, self.homography, micro_w, micro_h)
-            boxes.append(bbox)
-            if projected is None:
+
+            if self.label_reference_input == "camera_mono":
+                rgb_bbox = bbox
+                ir_bbox = project_bbox_by_homography(bbox, self.homography, ir_w, ir_h)
+                if "micro_light" in self.shared_label_inputs:
+                    micro_bbox = clamp_bbox_xyxy(bbox, micro_w, micro_h)
+                else:
+                    micro_bbox = project_bbox_by_homography(bbox, self.homography, micro_w, micro_h)
+            else:
+                ir_bbox = bbox
+                rgb_bbox = project_bbox_by_homography(bbox, self.inverse_homography, rgb_w, rgb_h)
+                if "micro_light" in self.shared_label_inputs:
+                    micro_bbox = clamp_bbox_xyxy(bbox, micro_w, micro_h)
+                else:
+                    micro_bbox = project_bbox_by_homography(bbox, self.inverse_homography, micro_w, micro_h)
+
+            if rgb_bbox is None:
+                boxes.append((0.0, 0.0, 0.0, 0.0))
+            else:
+                boxes.append(rgb_bbox)
+
+            if ir_bbox is None:
                 ir_boxes.append((0.0, 0.0, 0.0, 0.0))
                 ir_valid.append(False)
             else:
-                ir_boxes.append(projected)
+                ir_boxes.append(ir_bbox)
                 ir_valid.append(True)
-            if projected_micro is None:
+
+            if micro_bbox is None:
                 micro_boxes.append((0.0, 0.0, 0.0, 0.0))
                 micro_valid.append(False)
             else:
-                micro_boxes.append(projected_micro)
+                micro_boxes.append(micro_bbox)
                 micro_valid.append(True)
+
             labels.append(class_idx)
 
         if not boxes:

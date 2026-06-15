@@ -1,8 +1,14 @@
 from typing import Any, Dict, List, Tuple
 
 import torch
+import torch.multiprocessing as mp
 
 from torch.utils.data import DataLoader, Dataset, Subset, default_collate
+
+try:
+    mp.set_sharing_strategy('file_system')
+except RuntimeError:
+    pass
 
 from dprt.utils.misc import as_list
 
@@ -51,10 +57,12 @@ def load_listed(dataset: Dataset, config: Dict[str, Any]) -> DataLoader:
     dataset = apply_subset(dataset, config)
     split = getattr(dataset, 'split', None)
     shuffle = bool(config['train']['shuffle']) if split in {None, 'train'} else False
+    num_workers = int(config['computing']['workers'])
     return DataLoader(
         dataset=dataset,
         batch_size=config['train']['batch_size'],
         shuffle=shuffle,
-        num_workers=config['computing']['workers'],
+        num_workers=num_workers,
+        persistent_workers=(num_workers > 0),
         collate_fn=listed_collating
     )

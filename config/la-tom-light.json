@@ -33,7 +33,7 @@
         "subset": null
     },
     "train": {
-        "batch_size": 16,
+        "batch_size": 32,
         "shuffle": true,
         "epochs": 200,
         "logging": "epoch",
@@ -43,7 +43,7 @@
         "cost_giou": 1.0,
         "optimizer": {
             "name": "AdamW",
-            "lr": 0.0001,
+            "lr": 0.0002,
             "weight_decay": 0.01
         },
         "scheduler": {
@@ -65,10 +65,10 @@
         "inputs": [
             "camera_mono",
             "ir_image",
-            "mirco_light",
             "radar_bev",
             "radar_front",
-            "lidar_bev"
+            "lidar_bev",
+            "micro_light"
         ],
         "input_enable": {
             "camera_mono": true,
@@ -76,7 +76,7 @@
             "radar_bev": false,
             "radar_front": false,
             "lidar_bev": false,
-            "mirco_light": true
+            "micro_light": false
         },
         "skiplinks": {
             "camera_mono": true,
@@ -84,7 +84,7 @@
             "radar_bev": true,
             "radar_front": true,
             "lidar_bev": true,
-            "mirco_light": true
+            "micro_light": true
         },
         "imagenet_normalize": true,
         "backbones": {
@@ -126,7 +126,7 @@
                 "norm_layer": "BatchNorm2d",
                 "channel_last": false
             },
-            "mirco_light": {
+            "micro_light": {
                 "name": "ResNet101",
                 "weights": "IMAGENET1K_V2",
                 "multi_scale": 4,
@@ -194,7 +194,7 @@
                 "out_channels": 16,
                 "channel_last": false
             },
-            "mirco_light": {
+            "micro_light": {
                 "name": "FPN",
                 "in_channels_list": [
                     3,
@@ -225,22 +225,19 @@
         "fuser": {
             "name": "rgb_ir_query_fusion",
             "i_iter": 3,
-            "m_views": 3,
+            "m_views": 2,
             "d_model": 16,
             "d_ffn": 32,
             "n_queries": 400,
             "n_levels": [
                 5,
-                5,
                 5
             ],
             "n_heads": [
                 1,
-                1,
                 1
             ],
             "n_points": [
-                1,
                 1,
                 1
             ],
@@ -250,8 +247,7 @@
             "activation": "Mish",
             "inputs": [
                 "camera_mono",
-                "ir_image",
-                "mirco_light"
+                "ir_image"
             ]
         },
         "head": {
@@ -323,7 +319,7 @@
                 "n_levels": 5,
                 "normalize": true
             },
-            "mirco_light": {
+            "micro_light": {
                 "name": "sinusoidal_embedding",
                 "num_feats": 16,
                 "n_levels": 5,

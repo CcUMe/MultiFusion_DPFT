@@ -118,7 +118,7 @@ def main():
     config['computing']['workers'] = 0
     config['model']['input_enable']['camera_mono'] = True
     config['model']['input_enable']['ir_image'] = True
-    config['model']['input_enable']['mirco_light'] = True
+    config['model']['input_enable']['micro_light'] = True
 
     out_root = Path(args.dst)
     out_root.mkdir(parents=True, exist_ok=True)
@@ -137,7 +137,7 @@ def main():
 
             rgb_image = dataset._load_image(sample['rgb_image']) if sample.get('rgb_image') is not None else None
             ir_image = dataset._load_image(sample['ir_image']) if sample.get('ir_image') is not None else None
-            micro_image = dataset._load_image(sample['mirco_light']) if sample.get('mirco_light') is not None else None
+            micro_image = dataset._load_image(sample['micro_light']) if sample.get('micro_light') is not None else None
 
             labels = target['labels']
             rgb_panel = None

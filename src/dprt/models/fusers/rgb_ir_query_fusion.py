@@ -20,7 +20,7 @@ def _select_modal_values(values, inputs: List[str], default: int) -> List[int]:
     if len(values) == len(inputs):
         return [int(value) for value in values]
     if len(values) == 2:
-        canonical = {'camera_mono': 0, 'ir_image': 1, 'mirco_light': 1}
+        canonical = {'camera_mono': 0, 'ir_image': 1, 'micro_light': 1}
         return [int(values[canonical[input_name]]) for input_name in inputs]
     raise ValueError(f'Cannot align modal values {values} with inputs {inputs}.')
 
@@ -271,7 +271,7 @@ class RGBIRQueryFusion(nn.Module):
         self.reduction = reduction
         self.q_init = getattr(nn.init, q_init)
 
-        invalid_inputs = set(self.inputs) - {'camera_mono', 'ir_image', 'mirco_light'}
+        invalid_inputs = set(self.inputs) - {'camera_mono', 'ir_image', 'micro_light'}
         if invalid_inputs or not self.inputs:
             raise ValueError(f'RGBIRQueryFusion received unsupported inputs: {self.inputs}.')
         if len(self.n_levels) != self.m_views or len(self.n_heads) != self.m_views or len(self.n_points) != self.m_views:
@@ -399,7 +399,7 @@ class RGBIRQueryFusion(nn.Module):
             query = layer(query, batch, reference_points, reference_valid, query_pos)
             self.last_query = query
             out = head(query, out)
-            for projected_name in ('ir_image', 'mirco_light'):
+            for projected_name in ('ir_image', 'micro_light'):
                 if projected_name in self.inputs:
                     projected_index = self.inputs.index(projected_name)
                     out[f'{projected_name}_reference_points'] = reference_points[projected_index]

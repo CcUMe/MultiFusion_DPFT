@@ -32,7 +32,7 @@ TEXT_BG = (0, 0, 0)
 DRAW_MODALITY_TO_SAMPLE_KEY = {
     'camera_mono': 'rgb_image',
     'ir_image': 'ir_image',
-    'mirco_light': 'mirco_light',
+    'micro_light': 'micro_light',
 }
 
 
@@ -215,13 +215,13 @@ def _metric_table(results: Dict[str, torch.Tensor], class_names: List[str]) -> s
 def main():
     parser = argparse.ArgumentParser('LH RGB/IR 2D detector test and visualization')
     parser.add_argument('--src', default='/mnt/disk1/zhangzhibin/dataset/LH_pairs_dataset_auto_v2')
-    parser.add_argument('--cfg', default='/mnt/disk1/zhangzhibin/dpft_v4/config/la-tom-qwen14b.json')
+    parser.add_argument('--cfg', default='/mnt/disk1/zhangzhibin/dpft_v4/config/la-tom_rgb_only.json')
     parser.add_argument('--checkpoint', required=True)
     parser.add_argument('--dst', default='/mnt/disk1/zhangzhibin/test/2D-vis')
     parser.add_argument('--split', default='test', choices=['train', 'val', 'test'])
     parser.add_argument('--draw-size', choices=['original', 'resized'], default='original',
                         help='Draw boxes on original modality image or resized model input.')
-    parser.add_argument('--draw-modality', choices=['auto', 'camera_mono', 'ir_image', 'mirco_light'], default='auto')
+    parser.add_argument('--draw-modality', choices=['auto', 'camera_mono', 'ir_image', 'micro_light'], default='auto')
     parser.add_argument('--batch-size', type=int, default=1)
     parser.add_argument('--num-samples', type=int, default=0)
     parser.add_argument('--score-threshold', type=float, default=0.2)

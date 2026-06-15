@@ -63,17 +63,17 @@
     "model": {
         "name": "dprt",
         "inputs": [
-            "mirco_light"
+            "micro_light"
         ],
         "input_enable": {
-            "mirco_light": true
+            "micro_light": true
         },
         "skiplinks": {
-            "mirco_light": true
+            "micro_light": true
         },
         "imagenet_normalize": true,
         "backbones": {
-            "mirco_light": {
+            "micro_light": {
                 "name": "ResNet101",
                 "weights": "IMAGENET1K_V2",
                 "multi_scale": 4,
@@ -85,7 +85,7 @@
             "enabled": false
         },
         "necks": {
-            "mirco_light": {
+            "micro_light": {
                 "name": "FPN",
                 "in_channels_list": [
                     3,
@@ -134,7 +134,7 @@
             "reduction": "weighted",
             "activation": "Mish",
             "inputs": [
-                "mirco_light"
+                "micro_light"
             ]
         },
         "head": {
@@ -176,7 +176,7 @@
             "attach_metadata": false
         },
         "embeddings": {
-            "mirco_light": {
+            "micro_light": {
                 "name": "sinusoidal_embedding",
                 "num_feats": 16,
                 "n_levels": 5,

@@ -7,6 +7,7 @@ import torch
 from dprt.models.dprt import build_dprt
 from dprt.models.dprt import DPRT   # 按你的项目实际导入路径改
 from dprt.models.detectors import build_rgb_ir_query_detector
+from dprt.utils.config import get_active_inputs
 import json
 
 def build(model: str, *args, **kwargs):
@@ -47,6 +48,22 @@ def build(model: str, *args, **kwargs):
 #     model.to(device)
 #     return model, epoch, timestamp
 
+
+
+def _inactive_state_prefixes_from_config(config):
+    model_config = config.get("model", {})
+    available_inputs = list(model_config.get("inputs") or [])
+    active_inputs = set(get_active_inputs(model_config))
+    inactive_inputs = [input_name for input_name in available_inputs if input_name not in active_inputs]
+    prefixes = []
+    for input_name in inactive_inputs:
+        prefixes.extend([
+            f'backbones.{input_name}.',
+            f'necks.{input_name}.',
+            f'embeddings.{input_name}.',
+        ])
+    return prefixes
+
 def load_model(checkpoint, config):
     obj = torch.load(checkpoint, map_location="cpu")
     if not isinstance(obj, dict) or 'model_state_dict' not in obj:
@@ -59,15 +76,17 @@ def load_model(checkpoint, config):
     if model is None:
         raise ValueError(f"Unsupported model type in config: {model_name!r}")
 
-    excluded_state_prefixes = obj.get('excluded_state_prefixes') or []
-    strict = not excluded_state_prefixes
+    checkpoint_excluded_prefixes = obj.get('excluded_state_prefixes') or []
+    current_excluded_prefixes = _inactive_state_prefixes_from_config(config)
+    allowed_missing_prefixes = list(dict.fromkeys(checkpoint_excluded_prefixes + current_excluded_prefixes))
+    strict = not allowed_missing_prefixes
     missing_keys, unexpected_keys = model.load_state_dict(obj['model_state_dict'], strict=strict)
     if unexpected_keys:
         raise ValueError(f'Unexpected checkpoint keys: {unexpected_keys}')
-    if excluded_state_prefixes:
+    if allowed_missing_prefixes:
         invalid_missing = [
             key for key in missing_keys
-            if not any(key.startswith(prefix) for prefix in excluded_state_prefixes)
+            if not any(key.startswith(prefix) for prefix in allowed_missing_prefixes)
         ]
         if invalid_missing:
             raise ValueError(

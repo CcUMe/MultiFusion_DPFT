@@ -155,7 +155,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser('DPRT data preprocessing')
     parser.add_argument('--src', type=str, default='/mnt/disk1/zhangzhibin/dataset/LH_pairs_dataset_auto_v2',
                         help="Path to the processed dataset folder.")
-    parser.add_argument('--cfg', type=str, default='/mnt/disk1/zhangzhibin/dpft_v4/config/la-tom_mirco_light_only.json',
+    parser.add_argument('--cfg', type=str, default='/mnt/disk1/zhangzhibin/dpft_v4/config/la-tom_micro_light_only.json',
                         help="Path to the configuration file.")
     parser.add_argument('--dst', type=str, default='/mnt/disk1/zhangzhibin/test/micro',
                         help="Path to save the training log.")
