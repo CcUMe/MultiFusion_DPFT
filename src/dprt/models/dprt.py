@@ -358,6 +358,7 @@ class DPRT(nn.Module):
     def from_config(cls, config: Dict[str, Any]) -> DPRT:  # noqa: F821
         computing: Dict[str, Any] = config['computing']
         model: Dict[str, Any] = config['model']
+        data: Dict[str, Any] = config.get('data', {})
         inputs = get_active_inputs(model)
         configured_fuser_inputs = model.get('fuser', {}).get('inputs')
         if configured_fuser_inputs is None:
@@ -372,7 +373,12 @@ class DPRT(nn.Module):
         head = _build_module(build_head, 'head', model, computing)
         fuser = _build_module(
             build_fuser, 'fuser', model, computing,
-            head=head, inputs=fuser_inputs
+            head=head,
+            inputs=fuser_inputs,
+            reference_input=model.get('fuser', {}).get(
+                'reference_input',
+                data.get('label_reference_input', 'camera_mono')
+            ),
         )
         language_config = model.get('language_model')
         language_model = None

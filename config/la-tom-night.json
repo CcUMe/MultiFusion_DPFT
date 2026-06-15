@@ -33,7 +33,7 @@
         "subset": null,
         "label_reference_input": "ir_image",
         "shared_label_inputs": [
-            "mirco_light"
+            "micro_light"
         ]
     },
     "train": {
@@ -69,7 +69,7 @@
         "inputs": [
             "camera_mono",
             "ir_image",
-            "mirco_light"
+            "micro_light"
         ],
         "input_enable": {
             "camera_mono": true,
@@ -97,7 +97,7 @@
                 "norm_layer": "BatchNorm2d",
                 "channel_last": true
             },
-            "mirco_light": {
+            "micro_light": {
                 "name": "ResNet101",
                 "weights": "IMAGENET1K_V2",
                 "multi_scale": 4,
@@ -131,7 +131,7 @@
                 ],
                 "out_channels": 16
             },
-            "mirco_light": {
+            "micro_light": {
                 "name": "FPN",
                 "in_channels_list": [
                     3,
@@ -165,6 +165,7 @@
             "m_views": 3,
             "d_model": 16,
             "d_ffn": 32,
+            "reference_input": "camera_mono",
             "n_queries": 400,
             "n_levels": [
                 5,
@@ -188,7 +189,7 @@
             "inputs": [
                 "camera_mono",
                 "ir_image",
-                "mirco_light"
+                "micro_light"
             ]
         },
         "head": {
@@ -201,17 +202,17 @@
                 "groups": [
                     [
                         7,
-                        8
-                    ],
-                    [
-                        2,
-                        4,
                         5
                     ],
                     [
-                        3,
                         1,
-                        6
+                        2,
+                        3,
+                        4
+                    ],
+                    [
+                        6,
+                        8
                     ]
                 ],
                 "background_weight": 0.1,
@@ -242,7 +243,7 @@
                 "n_levels": 5,
                 "normalize": true
             },
-            "mirco_light": {
+            "micro_light": {
                 "name": "sinusoidal_embedding",
                 "num_feats": 16,
                 "n_levels": 5,
@@ -258,6 +259,16 @@
                 "threshold": 0.5,
                 "score_threshold": 0.0
             }
+        },
+        "exporter": {
+            "name": "lh_pairs",
+            "conf_thrs": [
+                0.0,
+                0.3,
+                0.5,
+                0.7,
+                0.9
+            ]
         }
     }
 }

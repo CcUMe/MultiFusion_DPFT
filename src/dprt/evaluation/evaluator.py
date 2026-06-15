@@ -58,10 +58,14 @@ class CentralizedEvaluator():
             categories=config.get('data', {}).get('categories'),
             label_mode=label_mode
         )
-        if label_mode in {'weak', 'weak_2d', 'weak_2d_bev', 'weak_center_lh'} and config['evaluate'].get('disable_exporter_in_weak_mode', True):
+        evaluate_config = config['evaluate']
+        exporter_config = evaluate_config.get('exporter')
+        if label_mode in {'weak', 'weak_2d', 'weak_2d_bev', 'weak_center_lh'} and evaluate_config.get('disable_exporter_in_weak_mode', True):
+            exporter = None
+        elif exporter_config is None:
             exporter = None
         else:
-            exporter = build_exporter(config['evaluate']['exporter']['name'], config)
+            exporter = build_exporter(exporter_config['name'], config)
         device = torch.device(config['computing']['device'])
         logging = config['evaluate'].get('logging', config['train'].get('logging'))
         measure_inference_time = config['evaluate'].get('measure_inference_time', False)
@@ -411,7 +415,7 @@ class CentralizedEvaluator():
         self._print_metrics("Test metrics", scalars)
 
     def evaluate(self, checkpoint: str, data_loader: Iterable, dst: str = None):
-        model, epoch, timestamp = load_model(checkpoint, self.config)
+        model, epoch, timestamp, _ = load_model(checkpoint, self.config)
         model.to(self.device)
         model.eval()
         confidence = load_confidence_modules(self.config, self.device)

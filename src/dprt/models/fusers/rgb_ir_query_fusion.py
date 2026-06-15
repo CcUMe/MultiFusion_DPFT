@@ -250,6 +250,7 @@ class RGBIRQueryFusion(nn.Module):
                  reduction: str = 'weighted',
                  activation: str = 'ReLU',
                  head: nn.Module = None,
+                 reference_input: str = 'camera_mono',
                  **kwargs) -> None:
         super().__init__()
 
@@ -270,10 +271,16 @@ class RGBIRQueryFusion(nn.Module):
         self.norm = norm
         self.reduction = reduction
         self.q_init = getattr(nn.init, q_init)
+        self.reference_input = reference_input
 
         invalid_inputs = set(self.inputs) - {'camera_mono', 'ir_image', 'micro_light'}
         if invalid_inputs or not self.inputs:
             raise ValueError(f'RGBIRQueryFusion received unsupported inputs: {self.inputs}.')
+        if self.reference_input not in self.inputs:
+            raise ValueError(
+                f'RGBIRQueryFusion reference_input must be one of active fusion inputs. '
+                f'Got reference_input={self.reference_input}, inputs={self.inputs}.'
+            )
         if len(self.n_levels) != self.m_views or len(self.n_heads) != self.m_views or len(self.n_points) != self.m_views:
             raise ValueError(
                 'RGBIRQueryFusion expects one n_levels/n_heads/n_points value per input. '
@@ -323,63 +330,113 @@ class RGBIRQueryFusion(nn.Module):
         nn.init.normal_(self.query_embedding.weight, std=0.02)
 
     @staticmethod
-    def _project_rgb_to_ir(reference_points: torch.Tensor,
-                           homography: torch.Tensor,
-                           rgb_original_size: torch.Tensor,
-                           ir_original_size: torch.Tensor):
-        batch_size = reference_points.shape[0]
-        rgb_h = rgb_original_size[:, 0].view(batch_size, 1)
-        rgb_w = rgb_original_size[:, 1].view(batch_size, 1)
-        ir_h = ir_original_size[:, 0].view(batch_size, 1)
-        ir_w = ir_original_size[:, 1].view(batch_size, 1)
+    def _invert_homography(homography: torch.Tensor) -> torch.Tensor:
+        return torch.linalg.inv(homography)
 
-        rgb_x = reference_points[..., 0] * rgb_w
-        rgb_y = reference_points[..., 1] * rgb_h
-        points = torch.stack((rgb_x, rgb_y, torch.ones_like(rgb_x)), dim=-1)
+    @staticmethod
+    def _compose_homographies(left: torch.Tensor, right: torch.Tensor) -> torch.Tensor:
+        return torch.bmm(left, right)
+
+    @staticmethod
+    def _project_reference_points(reference_points: torch.Tensor,
+                                  homography: torch.Tensor,
+                                  source_original_size: torch.Tensor,
+                                  target_original_size: torch.Tensor):
+        batch_size = reference_points.shape[0]
+        src_h = source_original_size[:, 0].view(batch_size, 1)
+        src_w = source_original_size[:, 1].view(batch_size, 1)
+        tgt_h = target_original_size[:, 0].view(batch_size, 1)
+        tgt_w = target_original_size[:, 1].view(batch_size, 1)
+
+        src_x = reference_points[..., 0] * src_w
+        src_y = reference_points[..., 1] * src_h
+        points = torch.stack((src_x, src_y, torch.ones_like(src_x)), dim=-1)
         projected = torch.bmm(points, homography.transpose(1, 2))
 
         denom = projected[..., 2]
         valid_denom = torch.isfinite(denom) & (denom.abs() > 1e-6)
         safe_denom = torch.where(valid_denom, denom, torch.ones_like(denom))
-        ir_x = projected[..., 0] / safe_denom
-        ir_y = projected[..., 1] / safe_denom
+        tgt_x = projected[..., 0] / safe_denom
+        tgt_y = projected[..., 1] / safe_denom
 
-        reference_points = torch.dstack((
-            ir_x / torch.clamp(ir_w, min=1.0),
-            ir_y / torch.clamp(ir_h, min=1.0),
+        projected_points = torch.dstack((
+            tgt_x / torch.clamp(tgt_w, min=1.0),
+            tgt_y / torch.clamp(tgt_h, min=1.0),
         ))
-        reference_valid = (
+        projected_valid = (
             valid_denom
-            & torch.isfinite(reference_points).all(dim=-1)
-            & (reference_points[..., 0] >= 0.0)
-            & (reference_points[..., 0] <= 1.0)
-            & (reference_points[..., 1] >= 0.0)
-            & (reference_points[..., 1] <= 1.0)
+            & torch.isfinite(projected_points).all(dim=-1)
+            & (projected_points[..., 0] >= 0.0)
+            & (projected_points[..., 0] <= 1.0)
+            & (projected_points[..., 1] >= 0.0)
+            & (projected_points[..., 1] <= 1.0)
         )
-        reference_points = torch.clip(reference_points, min=0.0, max=1.0)
-        return reference_points, reference_valid
+        projected_points = torch.clip(projected_points, min=0.0, max=1.0)
+        return projected_points, projected_valid
+
+    @staticmethod
+    def _get_rgb_to_input_homography(input_name: str,
+                                     projections_by_input: Dict[str, Dict[str, torch.Tensor]]) -> torch.Tensor | None:
+        if input_name == 'camera_mono':
+            return None
+        return projections_by_input[input_name]['homography']
+
+    @staticmethod
+    def _get_input_original_size(input_name: str,
+                                 projections_by_input: Dict[str, Dict[str, torch.Tensor]]) -> torch.Tensor:
+        if input_name == 'camera_mono':
+            return projections_by_input[input_name]['rgb_original_size']
+        return projections_by_input[input_name]['original_size']
+
+    def _get_source_to_target_homography(self,
+                                         source_input: str,
+                                         target_input: str,
+                                         projections_by_input: Dict[str, Dict[str, torch.Tensor]]) -> torch.Tensor | None:
+        if source_input == target_input:
+            return None
+
+        source_rgb_to_input = self._get_rgb_to_input_homography(source_input, projections_by_input)
+        target_rgb_to_input = self._get_rgb_to_input_homography(target_input, projections_by_input)
+
+        if source_input == 'camera_mono':
+            return target_rgb_to_input
+        if target_input == 'camera_mono':
+            return self._invert_homography(source_rgb_to_input)
+
+        return self._compose_homographies(
+            target_rgb_to_input,
+            self._invert_homography(source_rgb_to_input),
+        )
 
     def get_reference_points(self,
                              query: torch.Tensor,
                              projection: List[Dict[str, torch.Tensor]]):
-        rgb_reference_points = query[..., :2]
+        base_reference_points = query[..., :2]
+        projections_by_input = {item['input_name']: item for item in projection}
+        source_original_size = self._get_input_original_size(self.reference_input, projections_by_input)
+
         reference_points = []
         reference_valid = []
-        for input_name, input_projection in zip(self.inputs, projection):
-            if input_name == 'camera_mono':
-                reference_points.append(rgb_reference_points)
+        for input_name in self.inputs:
+            if input_name == self.reference_input:
+                reference_points.append(base_reference_points)
                 reference_valid.append(torch.ones(
-                    rgb_reference_points.shape[:2], dtype=torch.bool, device=rgb_reference_points.device
+                    base_reference_points.shape[:2], dtype=torch.bool, device=base_reference_points.device
                 ))
-            else:
-                ir_reference_points, ir_reference_valid = self._project_rgb_to_ir(
-                    rgb_reference_points,
-                    input_projection['homography'].to(dtype=query.dtype),
-                    input_projection['rgb_original_size'].to(dtype=query.dtype),
-                    input_projection['original_size'].to(dtype=query.dtype),
-                )
-                reference_points.append(ir_reference_points)
-                reference_valid.append(ir_reference_valid)
+                continue
+
+            target_original_size = self._get_input_original_size(input_name, projections_by_input)
+            homography = self._get_source_to_target_homography(
+                self.reference_input, input_name, projections_by_input
+            ).to(dtype=query.dtype)
+            projected_points, projected_valid = self._project_reference_points(
+                base_reference_points,
+                homography,
+                source_original_size.to(dtype=query.dtype),
+                target_original_size.to(dtype=query.dtype),
+            )
+            reference_points.append(projected_points)
+            reference_valid.append(projected_valid)
         return reference_points, reference_valid
 
     def forward(self,

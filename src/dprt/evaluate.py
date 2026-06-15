@@ -1,15 +1,48 @@
 import argparse
+import glob
+import os
+import os.path as osp
 
 from dprt.datasets import init
 from dprt.datasets import load
 from dprt.evaluation import evaluate
 from dprt.utils.config import load_config
 from dprt.utils.misc import set_seed
-import os
 os.environ['CUDA_VISIBLE_DEVICES'] = '1'
 
 import torch.multiprocessing
 torch.multiprocessing.set_sharing_strategy('file_system')
+
+
+def _resolve_checkpoint(checkpoint: str | None) -> str:
+    if not checkpoint:
+        raise ValueError('Please provide --checkpoint or set a valid default checkpoint path in evaluate.py.')
+
+    if osp.isfile(checkpoint):
+        return checkpoint
+
+    if not osp.isdir(checkpoint):
+        raise FileNotFoundError(f'Checkpoint path does not exist: {checkpoint}')
+
+    candidates = []
+    best_path = osp.join(checkpoint, 'checkpoints', 'best.pt')
+    if osp.isfile(best_path):
+        return best_path
+
+    search_roots = [
+        osp.join(checkpoint, 'checkpoints', '*_checkpoint_*.pt'),
+        osp.join(checkpoint, '*_checkpoint_*.pt'),
+    ]
+    for pattern in search_roots:
+        candidates.extend(glob.glob(pattern))
+
+    if not candidates:
+        raise FileNotFoundError(
+            f'No checkpoint file found under directory: {checkpoint}. '
+            'Expected best.pt or *_checkpoint_*.pt.'
+        )
+
+    return sorted(candidates)[-1]
 
 
 def main(src: str, cfg: str, checkpoint: str, dst: str):
@@ -27,6 +60,8 @@ def main(src: str, cfg: str, checkpoint: str, dst: str):
     print("=" * 60)
     print(f"配置文件路径: {cfg}")
     print(f"数据集源目录: {src}")
+    checkpoint = _resolve_checkpoint(checkpoint)
+    print(f"评估权重路径: {checkpoint}")
 
     # Set global random seed
     set_seed(config['computing']['seed'])
@@ -107,15 +142,15 @@ import torch.utils.data as data
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser('DPRT data preprocessing')
+    parser = argparse.ArgumentParser('DPRT evaluation')
     parser.add_argument('--src', type=str, default='/mnt/disk1/zhangzhibin/dataset/LH_pairs_dataset_auto_v2',
                         help="Path to the processed dataset folder.")
-    parser.add_argument('--cfg', type=str, default='/mnt/disk1/zhangzhibin/dpft_v4/config/la-tom-qwen14b.json',
+    parser.add_argument('--cfg', type=str, default='/mnt/disk1/zhangzhibin/dpft_v4/config/la-tom-light.json',
                         help="Path to the configuration file.")
     parser.add_argument('--dst', type=str, default='/mnt/disk1/zhangzhibin/test/low-v2-eval',
                         help="Path to save the training log.")
-    parser.add_argument('--checkpoint', type=str, required=True,
-                        help="Path to the model checkpoint to evaluate.")
+    parser.add_argument('--checkpoint', type=str, default='/mnt/disk1/zhangzhibin/test/light/20260614-115352-428',
+                        help="Path to a checkpoint .pt file or an experiment directory containing checkpoints.")
     args = parser.parse_args()
 
 
