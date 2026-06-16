@@ -43,6 +43,12 @@ MODALITY_DIRS = {
 }
 MATCHED_COLOR = (0, 210, 0)
 UNMATCHED_COLOR = (0, 165, 255)
+HEATMAP_COLORMAPS = {
+    "turbo": cv2.COLORMAP_TURBO,
+    "jet": cv2.COLORMAP_JET,
+    "inferno": cv2.COLORMAP_INFERNO,
+    "hot": cv2.COLORMAP_HOT,
+}
 
 
 def parse_time(path: Path) -> float | None:
@@ -249,11 +255,87 @@ def draw_text_lines(
         cv2.putText(image, line, (x + 4, text_y), font, scale, color, thickness, cv2.LINE_AA)
 
 
-def visualize(image_path: Path, detections: Sequence[Dict[str, Any]], output_path: Path) -> None:
+def build_detection_heatmap(
+    image_shape: Tuple[int, int],
+    detections: Sequence[Dict[str, Any]],
+    sigma_scale: float,
+) -> np.ndarray:
+    height, width = image_shape
+    heatmap = np.zeros((height, width), dtype=np.float32)
+
+    for detection in detections:
+        x1, y1, x2, y2 = detection["box_xyxy"]
+        x1 = max(0, min(width - 1, int(round(x1 * width))))
+        x2 = max(0, min(width - 1, int(round(x2 * width))))
+        y1 = max(0, min(height - 1, int(round(y1 * height))))
+        y2 = max(0, min(height - 1, int(round(y2 * height))))
+        if x2 <= x1 or y2 <= y1:
+            continue
+
+        patch_w = x2 - x1 + 1
+        patch_h = y2 - y1 + 1
+        center_x = (patch_w - 1) * 0.5
+        center_y = (patch_h - 1) * 0.5
+        sigma_x = max(1.0, patch_w * sigma_scale)
+        sigma_y = max(1.0, patch_h * sigma_scale)
+
+        xs = np.arange(patch_w, dtype=np.float32)
+        ys = np.arange(patch_h, dtype=np.float32)
+        grid_x, grid_y = np.meshgrid(xs, ys)
+        gaussian = np.exp(
+            -(
+                ((grid_x - center_x) ** 2) / (2.0 * sigma_x * sigma_x)
+                + ((grid_y - center_y) ** 2) / (2.0 * sigma_y * sigma_y)
+            )
+        )
+        heatmap[y1 : y2 + 1, x1 : x2 + 1] += gaussian * float(detection["score"])
+
+    if heatmap.max() > 0:
+        heatmap /= heatmap.max()
+    return heatmap
+
+
+def overlay_heatmap(
+    image: np.ndarray,
+    heatmap: np.ndarray,
+    alpha: float,
+    threshold: float,
+    colormap_name: str,
+) -> np.ndarray:
+    overlay = image.copy()
+    mask = heatmap >= threshold
+    if not np.any(mask):
+        return overlay
+
+    colored = cv2.applyColorMap(
+        np.clip(heatmap * 255.0, 0, 255).astype(np.uint8),
+        HEATMAP_COLORMAPS[colormap_name],
+    )
+    blended = cv2.addWeighted(image, 1.0 - alpha, colored, alpha, 0.0)
+    overlay[mask] = blended[mask]
+    return overlay
+
+
+def visualize(
+    image_path: Path,
+    detections: Sequence[Dict[str, Any]],
+    output_path: Path,
+    visualization_mode: str,
+    heatmap_alpha: float,
+    heatmap_threshold: float,
+    heatmap_sigma_scale: float,
+    heatmap_colormap: str,
+) -> None:
     image = cv2.imread(str(image_path), cv2.IMREAD_COLOR)
     if image is None:
         raise FileNotFoundError(f"Cannot read image: {image_path}")
     height, width = image.shape[:2]
+    draw_boxes = visualization_mode in {"boxes", "both"}
+    draw_heatmap = visualization_mode in {"heatmap", "both"}
+
+    if draw_heatmap:
+        heatmap = build_detection_heatmap((height, width), detections, heatmap_sigma_scale)
+        image = overlay_heatmap(image, heatmap, heatmap_alpha, heatmap_threshold, heatmap_colormap)
 
     for detection in detections:
         x1, y1, x2, y2 = detection["box_xyxy"]
@@ -261,7 +343,8 @@ def visualize(image_path: Path, detections: Sequence[Dict[str, Any]], output_pat
         y1, y2 = int(round(y1 * height)), int(round(y2 * height))
         match = detection["position_match"]
         color = MATCHED_COLOR if match else UNMATCHED_COLOR
-        cv2.rectangle(image, (x1, y1), (x2, y2), color, 2)
+        if draw_boxes:
+            cv2.rectangle(image, (x1, y1), (x2, y2), color, 2)
         lines = [f"{detection['label']} {detection['score']:.2f}"]
         if match:
             lines.append(f"xyz=({match['x_forward_m']:.1f}, {match['y_left_m']:.1f}, {match['z_up_m']:.1f})m")
@@ -315,12 +398,17 @@ def main() -> None:
     parser = argparse.ArgumentParser("Draw DPRT detections and positions on LH_all_sensor images")
     parser.add_argument('--src', default='/mnt/disk1/yangqilin/dataset/LH_all_sensor/4_30/with_cameras_capture_20260430_101120')
     parser.add_argument('--cfg', default=None, help='Model config. Defaults to the config.json beside the checkpoint directory.')
-    parser.add_argument('--checkpoint', required=True)
-    parser.add_argument('--dst', default='/mnt/disk1/zhangzhibin/test/lh_all_sensor_positions')
+    parser.add_argument('--checkpoint', default="/mnt/disk1/zhangzhibin/test/light/20260614-115352-428/checkpoints/20260614-115352-428_checkpoint_0102.pt", required=True)
+    parser.add_argument('--dst', default='/mnt/disk1/yangqilin/dpft/lh_all_sensor_positions')
     parser.add_argument("--draw-modality", choices=list(MODALITY_DIRS), default="camera_mono")
     parser.add_argument("--device", default=None)
     parser.add_argument("--score-threshold", type=float, default=0.25)
     parser.add_argument("--nms-iou", type=float, default=0.5)
+    parser.add_argument("--visualization-mode", choices=["boxes", "heatmap", "both"], default="boxes")
+    parser.add_argument("--heatmap-alpha", type=float, default=0.55)
+    parser.add_argument("--heatmap-threshold", type=float, default=0.05)
+    parser.add_argument("--heatmap-sigma-scale", type=float, default=0.25)
+    parser.add_argument("--heatmap-colormap", choices=sorted(HEATMAP_COLORMAPS), default="turbo")
     parser.add_argument("--limit", type=int, default=0)
     args = parser.parse_args()
 
@@ -370,7 +458,16 @@ def main() -> None:
             attach_positions(detections, record["detections"], names, "descending", 0.0)
 
             draw_path = paths[args.draw_modality]
-            visualize(draw_path, detections, output_dir / draw_path.relative_to(capture_dir))
+            visualize(
+                draw_path,
+                detections,
+                output_dir / draw_path.relative_to(capture_dir),
+                visualization_mode=args.visualization_mode,
+                heatmap_alpha=args.heatmap_alpha,
+                heatmap_threshold=args.heatmap_threshold,
+                heatmap_sigma_scale=args.heatmap_sigma_scale,
+                heatmap_colormap=args.heatmap_colormap,
+            )
             saved += 1
             if saved % 100 == 0:
                 print(f"saved {saved} images")
