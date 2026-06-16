@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 
-DEFAULT_CONFIG_PATH = Path(__file__).resolve().parent / "low_altitude_radar_config.jsonc"
+DEFAULT_CONFIG_PATH = "/home/yangqilin/code/dpft_v4/config/low_altitude_radar_config.jsonc"
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "pitch_selection": {

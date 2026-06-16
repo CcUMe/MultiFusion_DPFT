@@ -16,21 +16,23 @@
 4. 按“天线一次完整扫描”边处理边保存
 5. 每遇到 antenna_frame_end != 0，立即保存一个 scan_xxxxxx 文件夹
 
-输出结构：
+默认输出结构（minimal）：
 out_dir/
   scans/
     scans_summary.json
     scan_000000/
       scan_summary.json
-      frames_summary.json
-      read_points.csv
-      terrain_points.csv
       isolated_objects.csv
       powerlines.csv
       dense_areas.csv
-      sum_channel.npy
-      diff_channel.npy
+      sum_channel.npy   # 可选 --dump-echo
+      diff_channel.npy  # 可选 --dump-echo
       raw_frames.bin    # 可选 --save-raw
+
+full 模式额外输出：
+  - frames_summary.json
+  - read_points.csv
+  - terrain_points.csv
 
 用法：
   python parse_mmwave_stream_scans.py input.bin --out out_dir
@@ -802,6 +804,12 @@ def flatten_rows_for_isolated(frames: List[Dict[str, Any]]) -> List[Dict[str, An
                 "file_offset": f["offset"],
                 "network_frame_no": h.get("network_frame_no"),
                 "low_power_frame_no": h.get("low_power_frame_no"),
+                "aircraft_true_heading_deg": h.get("aircraft_true_heading_deg"),
+                "stable_azimuth_deg": h.get("stable_azimuth_deg"),
+                "stable_pitch_deg": h.get("stable_pitch_deg"),
+                "azimuth_install_error_deg": h.get("azimuth_install_error_deg"),
+                "pitch_install_error_deg": h.get("pitch_install_error_deg"),
+                "roll_install_error_deg": h.get("roll_install_error_deg"),
                 **obj,
             })
     return rows
@@ -822,6 +830,12 @@ def flatten_rows_for_powerlines(frames: List[Dict[str, Any]]) -> List[Dict[str, 
                 "file_offset": f["offset"],
                 "network_frame_no": h.get("network_frame_no"),
                 "low_power_frame_no": h.get("low_power_frame_no"),
+                "aircraft_true_heading_deg": h.get("aircraft_true_heading_deg"),
+                "stable_azimuth_deg": h.get("stable_azimuth_deg"),
+                "stable_pitch_deg": h.get("stable_pitch_deg"),
+                "azimuth_install_error_deg": h.get("azimuth_install_error_deg"),
+                "pitch_install_error_deg": h.get("pitch_install_error_deg"),
+                "roll_install_error_deg": h.get("roll_install_error_deg"),
                 **info,
                 **pos,
             })
@@ -842,6 +856,12 @@ def flatten_rows_for_dense_areas(frames: List[Dict[str, Any]]) -> List[Dict[str,
                     "file_offset": f["offset"],
                     "network_frame_no": h.get("network_frame_no"),
                     "low_power_frame_no": h.get("low_power_frame_no"),
+                    "aircraft_true_heading_deg": h.get("aircraft_true_heading_deg"),
+                    "stable_azimuth_deg": h.get("stable_azimuth_deg"),
+                    "stable_pitch_deg": h.get("stable_pitch_deg"),
+                    "azimuth_install_error_deg": h.get("azimuth_install_error_deg"),
+                    "pitch_install_error_deg": h.get("pitch_install_error_deg"),
+                    "roll_install_error_deg": h.get("roll_install_error_deg"),
                     "area_index": area["area_index"],
                     "area_vertex_count": area["vertex_count"],
                     **v,
@@ -977,6 +997,7 @@ def save_one_scan(
     frames: List[Dict[str, Any]],
     complete: bool,
     close_reason: str,
+    export_mode: str,
     dump_echo: bool,
     save_raw: bool,
 ) -> Dict[str, Any]:
@@ -998,16 +1019,17 @@ def save_one_scan(
     )
 
     write_json(scan_dir / "scan_summary.json", summary)
-    write_json(
-        scan_dir / "frames_summary.json",
-        [strip_large_arrays(f) for f in frames],
-    )
-
-    write_csv(scan_dir / "read_points.csv", flatten_rows_for_read_points(frames))
-    write_csv(scan_dir / "terrain_points.csv", flatten_rows_for_terrain(frames))
     write_csv(scan_dir / "isolated_objects.csv", flatten_rows_for_isolated(frames))
     write_csv(scan_dir / "powerlines.csv", flatten_rows_for_powerlines(frames))
     write_csv(scan_dir / "dense_areas.csv", flatten_rows_for_dense_areas(frames))
+    write_csv(scan_dir / "terrain_points.csv", flatten_rows_for_terrain(frames))
+
+    if export_mode == "full":
+        write_json(
+            scan_dir / "frames_summary.json",
+            [strip_large_arrays(f) for f in frames],
+        )
+        write_csv(scan_dir / "read_points.csv", flatten_rows_for_read_points(frames))
 
     if dump_echo:
         dump_scan_echo_npy(scan_dir, frames)
@@ -1053,15 +1075,17 @@ def print_frame_summary(frame_index: int, f: Dict[str, Any]) -> None:
 def main() -> int:
     ap = argparse.ArgumentParser(description="毫米波雷达 bin 流式解析，并按完整天线扫描保存")
     ap.add_argument("bin_file", type=Path, help="输入 bin 文件")
-    ap.add_argument("--out", type=Path, default=Path("mmwave_stream_out"), help="输出目录")
+    ap.add_argument("--out", type=Path, help="输出目录。默认写到输入 bin 同目录下的 protocol_parse_out")
     ap.add_argument("--endian", choices=["auto", "little", "big"], default="auto", help="字节序")
     ap.add_argument("--max-frames", type=int, default=None, help="最多处理多少帧")
     ap.add_argument("--strict", action="store_true", help="严格模式")
     ap.add_argument("--non-strict", action="store_true", help="非严格模式")
+    ap.add_argument("--export-mode", choices=["minimal", "full"], default="minimal", help="输出模式。minimal 只写识别必需文件；full 额外写逐帧/READ/terrain 明细")
     ap.add_argument("--dump-echo", action="store_true", help="每次扫描输出 sum/diff npy")
     ap.add_argument("--save-raw", action="store_true", help="每次扫描保存 raw_frames.bin")
     ap.add_argument("--keep-incomplete", action="store_true", help="保存文件开头/结尾不完整扫描")
     ap.add_argument("--verbose", action="store_true", help="打印 warning")
+    ap.add_argument("--log-frames", action="store_true", help="打印每一帧摘要；默认关闭，仅输出扫描级汇总")
     args = ap.parse_args()
 
     if not args.bin_file.exists():
@@ -1074,12 +1098,18 @@ def main() -> int:
     if args.strict:
         strict = True
 
+    if args.out is None:
+        args.out = args.bin_file.resolve().parent / "protocol_parse_out"
+    else:
+        args.out = args.out.resolve()
+
     args.out.mkdir(parents=True, exist_ok=True)
 
     print(f"[INFO] 输入文件: {args.bin_file}")
     print(f"[INFO] 输出目录: {args.out.resolve()}")
     print(f"[INFO] 单帧长度: {FRAME_BYTES} bytes")
-    print("[INFO] 开始流式解析，遇到完整扫描结束标志后立即保存。")
+    print(f"[INFO] 输出模式: {args.export_mode}")
+    print("[INFO] 开始流式解析，默认静默逐帧，仅在完整扫描保存时输出汇总。")
 
     current_scan_frames: List[Dict[str, Any]] = []
     scan_summaries: List[Dict[str, Any]] = []
@@ -1107,7 +1137,8 @@ def main() -> int:
             if args.save_raw:
                 f["_raw_frame"] = raw_frame
 
-            print_frame_summary(frame_index, f)
+            if args.log_frames:
+                print_frame_summary(frame_index, f)
 
             if args.verbose and f["warnings"]:
                 for w in f["warnings"]:
@@ -1127,6 +1158,7 @@ def main() -> int:
                         frames=current_scan_frames,
                         complete=False,
                         close_reason="new_start_before_previous_end",
+                        export_mode=args.export_mode,
                         dump_echo=args.dump_echo,
                         save_raw=args.save_raw,
                     )
@@ -1152,6 +1184,7 @@ def main() -> int:
                     frames=current_scan_frames,
                     complete=True,
                     close_reason="end_flag",
+                    export_mode=args.export_mode,
                     dump_echo=args.dump_echo,
                     save_raw=args.save_raw,
                 )
@@ -1185,6 +1218,7 @@ def main() -> int:
             frames=current_scan_frames,
             complete=False,
             close_reason="eof_without_end_flag",
+            export_mode=args.export_mode,
             dump_echo=args.dump_echo,
             save_raw=args.save_raw,
         )
@@ -1211,6 +1245,7 @@ def main() -> int:
         "saved_scan_count": len(scan_summaries),
         "error_count": error_count,
         "keep_incomplete": args.keep_incomplete,
+        "export_mode": args.export_mode,
         "dump_echo": args.dump_echo,
         "save_raw": args.save_raw,
     }

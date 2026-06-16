@@ -36,3 +36,23 @@
 - `fixed_layer_index`：当 `layer_selection = fixed_index` 时生效，表示固定显示第几层，索引从 0 开始。
 - `fixed_pitch_deg`：当 `layer_selection = fixed_pitch_deg` 时生效，表示希望显示的目标俯仰角，单位是度。脚本会自动在当前帧已有的 `pitch_layers_deg` 里寻找最接近的一层。
 - `layer_fallback`：当指定层无效或越界时的回退策略，可选 `middle`、`first`、`last`。
+
+
+生成对齐表和 mmwave_ra_npy：
+``text
+python ~/code/dpft_v4/scripts/radar_bin_analysis/build_image_aligned_ra.py \
+  --cap-dir /mnt/disk1/yangqilin/dataset/LH_all_sensor/5_19/with_cameras_capture_20260519_143539
+``
+
+解析协议目标：
+``text
+python ~/code/dpft_v4/scripts/parse_mmwave_bin_with_read.py \
+  /mnt/disk1/yangqilin/dataset/LH_all_sensor/5_19/with_cameras_capture_20260519_143539/with_cameras_capture_20260519_143539_mmwave_udp.bin
+``
+
+跑纯雷达识别：
+``text
+python ~/code/dpft_v4/scripts/low_altitude_recognition/run_rule_based_pipeline.py \
+  --cap-dir /mnt/disk1/yangqilin/dataset/LH_all_sensor/5_19/with_cameras_capture_20260519_143539 \
+  --candidate-source protocol
+``
