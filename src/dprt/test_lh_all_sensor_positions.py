@@ -712,14 +712,14 @@ def main() -> None:
             visualize(
                 draw_path,
                 detections,
-<<<<<<< HEAD
+
                 output_dir / draw_path.relative_to(capture_dir),
                 visualization_mode=args.visualization_mode,
                 heatmap_alpha=args.heatmap_alpha,
                 heatmap_threshold=args.heatmap_threshold,
                 heatmap_sigma_scale=args.heatmap_sigma_scale,
                 heatmap_colormap=args.heatmap_colormap,
-=======
+
 
             )
             saved += 1
