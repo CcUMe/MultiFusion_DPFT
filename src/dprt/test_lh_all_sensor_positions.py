@@ -592,13 +592,16 @@ def build_detection_heatmap(
 
 
 
-def overlay_distance_ellipses(
+def overlay_distance_attention(
     image: np.ndarray,
     detections: Sequence[Dict[str, Any]],
 ) -> np.ndarray:
-    overlay = image.copy().astype(np.float32)
+    base = image.astype(np.float32)
     height, width = image.shape[:2]
     min_distance, max_distance = distance_intensity_bounds(detections)
+
+    color_field = np.zeros((height, width, 3), dtype=np.float32)
+    alpha_field = np.zeros((height, width), dtype=np.float32)
 
     for detection in detections:
         x1, y1, x2, y2 = detection["box_xyxy"]
@@ -610,15 +613,14 @@ def overlay_distance_ellipses(
             continue
 
         intensity = detection_heat_value(detection, "distance", min_distance, max_distance)
-        alpha = 0.15 + 0.30 * intensity
-        fill_color = np.array([165, 225, 255], dtype=np.float32) - intensity * np.array([75, 85, 10], dtype=np.float32)
+        peak_alpha = 0.14 + 0.42 * intensity
 
         box_w = x2 - x1 + 1
         box_h = y2 - y1 + 1
-        radius_x = max(1, int(round(box_w * 0.32)))
-        radius_y = max(1, int(round(box_h * 0.32)))
         center_x = x1 + box_w // 2
         center_y = y1 + box_h // 2
+        radius_x = max(4, int(round(box_w * 0.48)))
+        radius_y = max(4, int(round(box_h * 0.48)))
 
         left = max(0, center_x - radius_x)
         right = min(width - 1, center_x + radius_x)
@@ -632,14 +634,31 @@ def overlay_distance_ellipses(
         grid_x, grid_y = np.meshgrid(xs, ys)
         norm_x = (grid_x - center_x) / max(float(radius_x), 1.0)
         norm_y = (grid_y - center_y) / max(float(radius_y), 1.0)
-        ellipse_mask = norm_x * norm_x + norm_y * norm_y <= 1.0
-        if not np.any(ellipse_mask):
+        radial = norm_x * norm_x + norm_y * norm_y
+
+        # Attention-like blob: smooth center focus with soft elliptical fade.
+        strength = np.exp(-2.8 * radial)
+        strength[radial > 1.35] = 0.0
+        if not np.any(strength > 0):
             continue
 
-        patch = overlay[top : bottom + 1, left : right + 1]
-        local_alpha = alpha * ellipse_mask.astype(np.float32)[..., None]
-        patch[:] = patch * (1.0 - local_alpha) + fill_color * local_alpha
+        local_alpha = peak_alpha * strength
+        heat_uint8 = np.clip((0.25 + 0.75 * strength) * 255.0, 0, 255).astype(np.uint8)
+        local_color = cv2.applyColorMap(heat_uint8, cv2.COLORMAP_TURBO).astype(np.float32)
 
+        patch_alpha = alpha_field[top : bottom + 1, left : right + 1]
+        patch_color = color_field[top : bottom + 1, left : right + 1]
+        update_mask = local_alpha > patch_alpha
+        patch_alpha[update_mask] = local_alpha[update_mask]
+        patch_color[update_mask] = local_color[update_mask]
+
+    nonzero = alpha_field > 0
+    if not np.any(nonzero):
+        return image
+
+    overlay = base.copy()
+    alpha = alpha_field[..., None]
+    overlay[nonzero] = base[nonzero] * (1.0 - alpha[nonzero]) + color_field[nonzero] * alpha[nonzero]
     return np.clip(overlay, 0, 255).astype(np.uint8)
 
 
@@ -684,7 +703,7 @@ def visualize(
 
     if draw_heatmap:
         if heatmap_value_source == "distance":
-            image = overlay_distance_ellipses(image, detections)
+            image = overlay_distance_attention(image, detections)
         else:
             heatmap = build_detection_heatmap((height, width), detections, heatmap_sigma_scale, heatmap_value_source)
             image = overlay_heatmap(image, heatmap, heatmap_alpha, heatmap_threshold, heatmap_colormap)
