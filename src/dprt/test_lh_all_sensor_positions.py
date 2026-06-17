@@ -16,10 +16,12 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Sequence, Tuple
-
+import os
+os.environ.setdefault('CUDA_VISIBLE_DEVICES', '1')
 import cv2
 import numpy as np
 import torch
+from scipy.optimize import linear_sum_assignment
 from torchvision.io import read_image
 from torchvision.ops import nms
 from torchvision.transforms.functional import resize
@@ -191,6 +193,203 @@ def candidate_azimuth(candidate: Dict[str, Any]) -> float:
     return math.degrees(math.atan2(float(candidate["y_left_m"]), float(candidate["x_forward_m"])))
 
 
+def candidate_range(candidate: Dict[str, Any]) -> float:
+    return float(candidate.get("geom_range_m", float("inf")))
+
+
+def detection_center_x(detection: Dict[str, Any]) -> float:
+    x1, _, x2, _ = detection["box_xyxy"]
+    return 0.5 * (x1 + x2)
+
+
+def detection_bottom_y(detection: Dict[str, Any]) -> float:
+    return float(detection["box_xyxy"][3])
+
+
+def detection_area(detection: Dict[str, Any]) -> float:
+    x1, y1, x2, y2 = detection["box_xyxy"]
+    return max(x2 - x1, 0.0) * max(y2 - y1, 0.0)
+
+
+def normalize_values(values: Sequence[float], invert: bool = False) -> List[float]:
+    if not values:
+        return []
+    lo = min(values)
+    hi = max(values)
+    if math.isclose(lo, hi):
+        normalized = [0.5] * len(values)
+    else:
+        normalized = [(value - lo) / (hi - lo) for value in values]
+    if invert:
+        normalized = [1.0 - value for value in normalized]
+    return normalized
+
+
+def assign_detection_positions(
+    detections: Sequence[Dict[str, Any]],
+    candidates: Sequence[Dict[str, Any]],
+    reverse: bool,
+    same_label_only: bool,
+) -> List[tuple[int, int]]:
+    if not detections or not candidates:
+        return []
+
+    det_x = [detection_center_x(item) for item in detections]
+    det_bottom = [detection_bottom_y(item) for item in detections]
+    det_area = [detection_area(item) for item in detections]
+    det_x_norm = normalize_values(det_x)
+    det_bottom_norm = normalize_values(det_bottom, invert=True)
+    det_area_norm = normalize_values(det_area, invert=True)
+    det_far_prior = [0.5 * (bottom + area) for bottom, area in zip(det_bottom_norm, det_area_norm)]
+
+    cand_az = [candidate_azimuth(item) for item in candidates]
+    cand_range = [candidate_range(item) for item in candidates]
+    cand_x_norm = normalize_values(cand_az, invert=reverse)
+    cand_far_prior = normalize_values(cand_range)
+    cand_conf_penalty = [1.0 - float(item.get("pred_confidence", 0.0)) for item in candidates]
+
+    cost = np.zeros((len(detections), len(candidates)), dtype=np.float32)
+    for i, detection in enumerate(detections):
+        for j, candidate in enumerate(candidates):
+            class_penalty = 0.0 if detection["label"] == str(candidate.get("pred_label", "")) else 1.25
+            if same_label_only and class_penalty > 0.0:
+                cost[i, j] = 1e6
+                continue
+            horizontal_cost = abs(det_x_norm[i] - cand_x_norm[j])
+            depth_cost = abs(det_far_prior[i] - cand_far_prior[j])
+            confidence_cost = cand_conf_penalty[j]
+            cost[i, j] = 3.0 * horizontal_cost + 1.5 * depth_cost + 0.15 * confidence_cost + class_penalty
+
+    row_ind, col_ind = linear_sum_assignment(cost)
+    return [
+        (int(row_idx), int(col_idx))
+        for row_idx, col_idx in zip(row_ind.tolist(), col_ind.tolist())
+        if np.isfinite(cost[row_idx, col_idx]) and cost[row_idx, col_idx] < 1e5
+    ]
+
+
+def candidate_position(candidate: Dict[str, Any]) -> Dict[str, float]:
+    return {
+        "x_forward_m": float(candidate["x_forward_m"]),
+        "y_left_m": float(candidate["y_left_m"]),
+        "z_up_m": float(candidate["z_up_m"]),
+    }
+
+
+def average_candidate_position(candidates: Sequence[Dict[str, Any]]) -> Dict[str, float]:
+    if not candidates:
+        raise ValueError('average_candidate_position requires at least one candidate.')
+    return {
+        "x_forward_m": float(sum(float(candidate["x_forward_m"]) for candidate in candidates) / len(candidates)),
+        "y_left_m": float(sum(float(candidate["y_left_m"]) for candidate in candidates) / len(candidates)),
+        "z_up_m": float(sum(float(candidate["z_up_m"]) for candidate in candidates) / len(candidates)),
+    }
+
+
+def attach_building_complex_positions(
+    visual_group: Sequence[Dict[str, Any]],
+    tall_building_detections: Sequence[Dict[str, Any]],
+) -> set[int]:
+    if not visual_group or not tall_building_detections:
+        return set()
+
+    matched_rows = set()
+    for row_idx, detection in enumerate(visual_group):
+        x1, _, x2, _ = detection["box_xyxy"]
+        grouped_positions = [
+            tall_detection["position_match"]
+            for tall_detection in tall_building_detections
+            if tall_detection.get("position_match") is not None
+            and x1 <= detection_center_x(tall_detection) <= x2
+        ]
+        if not grouped_positions:
+            continue
+        visual_group[row_idx]["position_match"] = {
+            "x_forward_m": float(sum(item["x_forward_m"] for item in grouped_positions) / len(grouped_positions)),
+            "y_left_m": float(sum(item["y_left_m"] for item in grouped_positions) / len(grouped_positions)),
+            "z_up_m": float(sum(item["z_up_m"] for item in grouped_positions) / len(grouped_positions)),
+        }
+        visual_group[row_idx]["position_source"] = "tall_building_mean"
+        matched_rows.add(row_idx)
+    return matched_rows
+
+
+def _set_visual_priors(detections: Sequence[Dict[str, Any]]) -> None:
+    centers = [detection_center_x(item) for item in detections]
+    bottoms = [detection_bottom_y(item) for item in detections]
+    areas = [detection_area(item) for item in detections]
+    center_norm = normalize_values(centers)
+    bottom_far = normalize_values(bottoms, invert=True)
+    area_far = normalize_values(areas, invert=True)
+    for detection, x_norm, bottom_score, area_score in zip(detections, center_norm, bottom_far, area_far):
+        detection["_visual_x_norm"] = x_norm
+        detection["_visual_far_prior"] = 0.5 * (bottom_score + area_score)
+
+
+def estimate_position_from_anchors(
+    detection: Dict[str, Any],
+    anchors: Sequence[Dict[str, Any]],
+) -> Dict[str, float] | None:
+    if not anchors:
+        return None
+
+    target_x = float(detection.get("_visual_x_norm", 0.5))
+    target_far = float(detection.get("_visual_far_prior", 0.5))
+    weighted = []
+    total_weight = 0.0
+    for anchor in anchors:
+        match = anchor.get("position_match")
+        if match is None:
+            continue
+        anchor_x = float(anchor.get("_visual_x_norm", 0.5))
+        anchor_far = float(anchor.get("_visual_far_prior", 0.5))
+        dx = abs(target_x - anchor_x)
+        df = abs(target_far - anchor_far)
+        weight = 1.0 / (0.05 + 2.5 * dx + 1.5 * df)
+        theta = math.atan2(float(match["y_left_m"]), max(float(match["x_forward_m"]), 1e-3))
+        weighted.append((weight, match, theta))
+        total_weight += weight
+
+    if total_weight <= 0.0:
+        return None
+
+    x_forward = sum(weight * float(match["x_forward_m"]) for weight, match, _ in weighted) / total_weight
+    theta = sum(weight * angle for weight, _, angle in weighted) / total_weight
+    z_up = sum(weight * float(match["z_up_m"]) for weight, match, _ in weighted) / total_weight
+    return {
+        "x_forward_m": float(x_forward),
+        "y_left_m": float(x_forward * math.tan(theta)),
+        "z_up_m": float(z_up),
+    }
+
+
+def attach_tall_building_positions(
+    visual_group: Sequence[Dict[str, Any]],
+    radar_group: Sequence[Dict[str, Any]],
+    reverse: bool,
+    anchors: Sequence[Dict[str, Any]],
+) -> set[int]:
+    matched_rows = set()
+    raw_positions: Dict[int, Dict[str, float]] = {}
+    if visual_group and radar_group:
+        assignments = assign_detection_positions(visual_group, radar_group, reverse, same_label_only=True)
+        for row_idx, col_idx in assignments:
+            raw_positions[row_idx] = candidate_position(radar_group[col_idx])
+
+    for row_idx, detection in enumerate(visual_group):
+        estimated = estimate_position_from_anchors(detection, anchors)
+        if estimated is not None:
+            detection["position_match"] = estimated
+            detection["position_source"] = "visual_anchor_estimate"
+            matched_rows.add(row_idx)
+            continue
+        if row_idx in raw_positions:
+            detection["position_match"] = raw_positions[row_idx]
+            detection["position_source"] = "same_label_raw"
+            matched_rows.add(row_idx)
+    return matched_rows
+
+
 def attach_positions(
     detections: List[Dict[str, Any]],
     candidates: Sequence[Dict[str, Any]],
@@ -198,40 +397,92 @@ def attach_positions(
     azimuth_order: str,
     min_radar_confidence: float,
 ) -> None:
-    valid_candidates = []
+    valid_candidates = [
+        candidate for candidate in candidates
+        if float(candidate.get("pred_confidence", 0.0)) >= min_radar_confidence
+    ]
     candidates_by_label: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
-    for candidate in candidates:
-        if float(candidate.get("pred_confidence", 0.0)) >= min_radar_confidence:
-            valid_candidates.append(candidate)
-            candidates_by_label[str(candidate.get("pred_label", ""))].append(candidate)
+    for candidate in valid_candidates:
+        candidates_by_label[str(candidate.get("pred_label", ""))].append(candidate)
 
     detections_by_label: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
     for detection in detections:
         detection["label"] = names[detection["label_index"]]
         detection["position_match"] = None
+        detection["position_source"] = None
         detections_by_label[detection["label"]].append(detection)
 
+    _set_visual_priors(detections)
     reverse = azimuth_order == "descending"
+    unmatched = []
+
     for label, visual_group in detections_by_label.items():
+        if label in {"Tall building", "Building complex"}:
+            continue
         radar_group = candidates_by_label.get(label, [])
-        visual_group.sort(key=lambda item: (item["box_xyxy"][0] + item["box_xyxy"][2]) * 0.5)
-        radar_group.sort(key=candidate_azimuth, reverse=reverse)
-        for detection, candidate in zip(visual_group, radar_group):
-            detection["position_match"] = {
-                "x_forward_m": float(candidate["x_forward_m"]),
-                "y_left_m": float(candidate["y_left_m"]),
-                "z_up_m": float(candidate["z_up_m"]),
-            }
-    if valid_candidates:
-        nearest = min(valid_candidates, key=lambda candidate: float(candidate["geom_range_m"]))
-        nearest_position = {
-            "x_forward_m": float(nearest["x_forward_m"]),
-            "y_left_m": float(nearest["y_left_m"]),
-            "z_up_m": float(nearest["z_up_m"]),
-        }
-        for detection in detections:
-            if detection["position_match"] is None:
-                detection["position_match"] = nearest_position.copy()
+        assignments = assign_detection_positions(visual_group, radar_group, reverse, same_label_only=True)
+        matched_rows = set()
+        for row_idx, col_idx in assignments:
+            visual_group[row_idx]["position_match"] = candidate_position(radar_group[col_idx])
+            visual_group[row_idx]["position_source"] = "same_label"
+            matched_rows.add(row_idx)
+        for row_idx, detection in enumerate(visual_group):
+            if row_idx not in matched_rows:
+                unmatched.append(detection)
+
+    anchor_detections = [
+        detection
+        for detection in detections
+        if detection.get("position_match") is not None
+        and detection["label"] not in {"Tall building", "Building complex"}
+    ]
+
+    tall_group = detections_by_label.get("Tall building", [])
+    tall_matched = attach_tall_building_positions(
+        tall_group,
+        candidates_by_label.get("Tall building", []),
+        reverse,
+        anchor_detections,
+    )
+    for row_idx, detection in enumerate(tall_group):
+        if row_idx not in tall_matched:
+            unmatched.append(detection)
+
+    building_group = detections_by_label.get("Building complex", [])
+    building_matched = attach_building_complex_positions(building_group, tall_group)
+    for row_idx, detection in enumerate(building_group):
+        if row_idx not in building_matched:
+            estimated = estimate_position_from_anchors(detection, anchor_detections)
+            if estimated is not None:
+                detection["position_match"] = estimated
+                detection["position_source"] = "visual_anchor_estimate"
+            else:
+                unmatched.append(detection)
+
+    if not valid_candidates:
+        return
+
+    if unmatched:
+        assignments = assign_detection_positions(unmatched, valid_candidates, reverse, same_label_only=False)
+        matched_rows = set()
+        for row_idx, col_idx in assignments:
+            unmatched[row_idx]["position_match"] = candidate_position(valid_candidates[col_idx])
+            unmatched[row_idx]["position_source"] = "global_cost"
+            matched_rows.add(row_idx)
+
+        for row_idx, detection in enumerate(unmatched):
+            if row_idx in matched_rows or detection.get("position_match") is not None:
+                continue
+            best_candidate = min(
+                valid_candidates,
+                key=lambda candidate: (
+                    0.0 if detection["label"] == str(candidate.get("pred_label", "")) else 1.0,
+                    abs(detection_center_x(detection) - candidate_azimuth(candidate) / 180.0),
+                    candidate_range(candidate),
+                )
+            )
+            detection["position_match"] = candidate_position(best_candidate)
+            detection["position_source"] = "global_fallback"
 
 
 def draw_text_lines(
@@ -461,12 +712,15 @@ def main() -> None:
             visualize(
                 draw_path,
                 detections,
+<<<<<<< HEAD
                 output_dir / draw_path.relative_to(capture_dir),
                 visualization_mode=args.visualization_mode,
                 heatmap_alpha=args.heatmap_alpha,
                 heatmap_threshold=args.heatmap_threshold,
                 heatmap_sigma_scale=args.heatmap_sigma_scale,
                 heatmap_colormap=args.heatmap_colormap,
+=======
+
             )
             saved += 1
             if saved % 100 == 0:

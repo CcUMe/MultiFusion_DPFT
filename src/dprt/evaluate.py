@@ -1,6 +1,7 @@
+import os
+os.environ['CUDA_VISIBLE_DEVICES'] = '2'
 import argparse
 import glob
-import os
 import os.path as osp
 
 from dprt.datasets import init
@@ -8,7 +9,7 @@ from dprt.datasets import load
 from dprt.evaluation import evaluate
 from dprt.utils.config import load_config
 from dprt.utils.misc import set_seed
-os.environ['CUDA_VISIBLE_DEVICES'] = '1'
+
 
 import torch.multiprocessing
 torch.multiprocessing.set_sharing_strategy('file_system')
