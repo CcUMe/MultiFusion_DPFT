@@ -9,6 +9,7 @@ candidates are sorted by azimuth from left-to-right.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import re
@@ -506,13 +507,52 @@ def draw_text_lines(
         cv2.putText(image, line, (x + 4, text_y), font, scale, color, thickness, cv2.LINE_AA)
 
 
+def detection_distance_m(detection: Dict[str, Any]) -> float | None:
+    match = detection.get("position_match")
+    if not match:
+        return None
+    return math.sqrt(
+        float(match["x_forward_m"]) ** 2
+        + float(match["y_left_m"]) ** 2
+        + float(match["z_up_m"]) ** 2
+    )
+
+
+def detection_heat_value(
+    detection: Dict[str, Any],
+    heatmap_value_source: str,
+    min_distance: float,
+    max_distance: float,
+) -> float:
+    if heatmap_value_source == "score":
+        return float(detection["score"])
+
+    distance = detection_distance_m(detection)
+    if distance is None:
+        return float(detection["score"])
+    if max_distance <= min_distance:
+        return 1.0
+    normalized = (distance - min_distance) / (max_distance - min_distance)
+    return float(np.clip(1.0 - normalized, 0.0, 1.0))
+
+
+def distance_intensity_bounds(detections: Sequence[Dict[str, Any]]) -> Tuple[float, float]:
+    distances = [distance for distance in (detection_distance_m(d) for d in detections) if distance is not None]
+    min_distance = min(distances) if distances else 0.0
+    max_distance = max(distances) if distances else 0.0
+    return min_distance, max_distance
+
+
+
 def build_detection_heatmap(
     image_shape: Tuple[int, int],
     detections: Sequence[Dict[str, Any]],
     sigma_scale: float,
+    heatmap_value_source: str,
 ) -> np.ndarray:
     height, width = image_shape
     heatmap = np.zeros((height, width), dtype=np.float32)
+    min_distance, max_distance = distance_intensity_bounds(detections)
 
     for detection in detections:
         x1, y1, x2, y2 = detection["box_xyxy"]
@@ -539,11 +579,68 @@ def build_detection_heatmap(
                 + ((grid_y - center_y) ** 2) / (2.0 * sigma_y * sigma_y)
             )
         )
-        heatmap[y1 : y2 + 1, x1 : x2 + 1] += gaussian * float(detection["score"])
+        heatmap[y1 : y2 + 1, x1 : x2 + 1] += gaussian * detection_heat_value(
+            detection,
+            heatmap_value_source,
+            min_distance,
+            max_distance,
+        )
 
     if heatmap.max() > 0:
         heatmap /= heatmap.max()
     return heatmap
+
+
+
+def overlay_distance_ellipses(
+    image: np.ndarray,
+    detections: Sequence[Dict[str, Any]],
+) -> np.ndarray:
+    overlay = image.copy().astype(np.float32)
+    height, width = image.shape[:2]
+    min_distance, max_distance = distance_intensity_bounds(detections)
+
+    for detection in detections:
+        x1, y1, x2, y2 = detection["box_xyxy"]
+        x1 = max(0, min(width - 1, int(round(x1 * width))))
+        x2 = max(0, min(width - 1, int(round(x2 * width))))
+        y1 = max(0, min(height - 1, int(round(y1 * height))))
+        y2 = max(0, min(height - 1, int(round(y2 * height))))
+        if x2 <= x1 or y2 <= y1:
+            continue
+
+        intensity = detection_heat_value(detection, "distance", min_distance, max_distance)
+        alpha = 0.15 + 0.30 * intensity
+        fill_color = np.array([165, 225, 255], dtype=np.float32) - intensity * np.array([75, 85, 10], dtype=np.float32)
+
+        box_w = x2 - x1 + 1
+        box_h = y2 - y1 + 1
+        radius_x = max(1, int(round(box_w * 0.32)))
+        radius_y = max(1, int(round(box_h * 0.32)))
+        center_x = x1 + box_w // 2
+        center_y = y1 + box_h // 2
+
+        left = max(0, center_x - radius_x)
+        right = min(width - 1, center_x + radius_x)
+        top = max(0, center_y - radius_y)
+        bottom = min(height - 1, center_y + radius_y)
+        if right <= left or bottom <= top:
+            continue
+
+        xs = np.arange(left, right + 1, dtype=np.float32)
+        ys = np.arange(top, bottom + 1, dtype=np.float32)
+        grid_x, grid_y = np.meshgrid(xs, ys)
+        norm_x = (grid_x - center_x) / max(float(radius_x), 1.0)
+        norm_y = (grid_y - center_y) / max(float(radius_y), 1.0)
+        ellipse_mask = norm_x * norm_x + norm_y * norm_y <= 1.0
+        if not np.any(ellipse_mask):
+            continue
+
+        patch = overlay[top : bottom + 1, left : right + 1]
+        local_alpha = alpha * ellipse_mask.astype(np.float32)[..., None]
+        patch[:] = patch * (1.0 - local_alpha) + fill_color * local_alpha
+
+    return np.clip(overlay, 0, 255).astype(np.uint8)
 
 
 def overlay_heatmap(
@@ -576,6 +673,7 @@ def visualize(
     heatmap_threshold: float,
     heatmap_sigma_scale: float,
     heatmap_colormap: str,
+    heatmap_value_source: str,
 ) -> None:
     image = cv2.imread(str(image_path), cv2.IMREAD_COLOR)
     if image is None:
@@ -585,8 +683,11 @@ def visualize(
     draw_heatmap = visualization_mode in {"heatmap", "both"}
 
     if draw_heatmap:
-        heatmap = build_detection_heatmap((height, width), detections, heatmap_sigma_scale)
-        image = overlay_heatmap(image, heatmap, heatmap_alpha, heatmap_threshold, heatmap_colormap)
+        if heatmap_value_source == "distance":
+            image = overlay_distance_ellipses(image, detections)
+        else:
+            heatmap = build_detection_heatmap((height, width), detections, heatmap_sigma_scale, heatmap_value_source)
+            image = overlay_heatmap(image, heatmap, heatmap_alpha, heatmap_threshold, heatmap_colormap)
 
     for detection in detections:
         x1, y1, x2, y2 = detection["box_xyxy"]
@@ -601,10 +702,25 @@ def visualize(
             lines.append(f"xyz=({match['x_forward_m']:.1f}, {match['y_left_m']:.1f}, {match['z_up_m']:.1f})m")
         else:
             lines.append("position: unmatched")
-        draw_text_lines(image, lines, max(0, x1), max(18, y1), color)
+
+        center_x = (x1 + x2) // 2
+        center_y = (y1 + y2) // 2
+        ellipse_radius_y = max(1, int(round((y2 - y1 + 1) * 0.32)))
+        text_x = max(0, center_x - 70)
+        text_y = max(22, center_y - ellipse_radius_y - 6)
+        draw_text_lines(image, lines, text_x, text_y, color)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     cv2.imwrite(str(output_path), image)
+
+
+def discover_image_result_files(src: Path) -> List[Path]:
+    direct = src / "recognition_candidates" / "structured_results" / "image_results.jsonl"
+    if direct.is_file():
+        return [direct]
+    files = sorted(src.glob("**/recognition_candidates/structured_results/image_results.jsonl"))
+    return [file for file in files if file.is_file()]
+
 
 
 def iter_records(path: Path, limit: int) -> Iterable[Dict[str, Any]]:
@@ -614,6 +730,67 @@ def iter_records(path: Path, limit: int) -> Iterable[Dict[str, Any]]:
                 break
             yield json.loads(line)
 
+
+
+def load_records(paths: Sequence[Path], limit: int) -> List[Dict[str, Any]]:
+    records: List[Dict[str, Any]] = []
+    for path in paths:
+        remaining = 0 if limit <= 0 else max(limit - len(records), 0)
+        if limit > 0 and remaining == 0:
+            break
+        records.extend(iter_records(path, remaining))
+    return records
+
+
+
+def record_scene_group_key(visible_path: Path, capture_dir: Path, group_level: str) -> str:
+    if group_level == "segment":
+        group_root = visible_path.parent.parent.parent
+    elif group_level == "part":
+        group_root = visible_path.parent.parent.parent.parent
+    elif group_level == "with_dir":
+        group_root = visible_path.parent.parent.parent.parent.parent
+    else:
+        raise ValueError(f"Unsupported group level: {group_level}")
+    try:
+        relative_root = group_root.relative_to(capture_dir)
+    except ValueError:
+        return str(group_root)
+    return str(relative_root) if relative_root.parts else group_root.name
+
+
+
+def sample_rank(value: str) -> int:
+    digest = hashlib.md5(value.encode("utf-8")).hexdigest()
+    return int(digest, 16)
+
+
+
+def build_visualization_selection(
+    records: Sequence[Dict[str, Any]],
+    capture_dir: Path,
+    visualize_percent: float,
+    group_level: str,
+) -> set[str] | None:
+    if visualize_percent >= 100.0:
+        return None
+    if visualize_percent <= 0.0:
+        return set()
+
+    grouped: Dict[str, List[tuple[int, str]]] = defaultdict(list)
+    for record in records:
+        visible_path = Path(record["image_path"])
+        scene_key = record_scene_group_key(visible_path, capture_dir, group_level)
+        path_str = str(visible_path)
+        grouped[scene_key].append((sample_rank(path_str), path_str))
+
+    selected: set[str] = set()
+    for scene_items in grouped.values():
+        scene_items.sort(key=lambda item: item[0])
+        keep_count = math.ceil(len(scene_items) * visualize_percent / 100.0)
+        for _, path_str in scene_items[:keep_count]:
+            selected.add(path_str)
+    return selected
 
 
 def load_compatible_model(checkpoint: str, config: Dict[str, Any]) -> torch.nn.Module:
@@ -647,7 +824,7 @@ def load_compatible_model(checkpoint: str, config: Dict[str, Any]) -> torch.nn.M
 
 def main() -> None:
     parser = argparse.ArgumentParser("Draw DPRT detections and positions on LH_all_sensor images")
-    parser.add_argument('--src', default='/mnt/disk1/yangqilin/dataset/LH_all_sensor/4_30/with_cameras_capture_20260430_101120')
+    parser.add_argument('--src', default='/mnt/disk1/yangqilin/dataset/LH_all_sensor/')
     parser.add_argument('--cfg', default=None, help='Model config. Defaults to the config.json beside the checkpoint directory.')
     parser.add_argument('--checkpoint', default="/mnt/disk1/zhangzhibin/test/light/20260614-115352-428/checkpoints/20260614-115352-428_checkpoint_0102.pt", required=True)
     parser.add_argument('--dst', default='/mnt/disk1/yangqilin/dpft/lh_all_sensor_positions')
@@ -660,11 +837,16 @@ def main() -> None:
     parser.add_argument("--heatmap-threshold", type=float, default=0.05)
     parser.add_argument("--heatmap-sigma-scale", type=float, default=0.25)
     parser.add_argument("--heatmap-colormap", choices=sorted(HEATMAP_COLORMAPS), default="turbo")
+    parser.add_argument("--heatmap-value-source", choices=["score", "distance"], default="score")
+    parser.add_argument("--visualize-percent", type=float, default=20.0)
+    parser.add_argument("--visualize-group-level", choices=["with_dir", "part", "segment"], default="with_dir")
     parser.add_argument("--limit", type=int, default=0)
     args = parser.parse_args()
 
     capture_dir = Path(args.src)
-    image_results = capture_dir / "recognition_candidates" / "structured_results" / "image_results.jsonl"
+    image_result_files = discover_image_result_files(capture_dir)
+    if not image_result_files:
+        raise FileNotFoundError(f"No image_results.jsonl found under {capture_dir}")
     output_dir = Path(args.dst)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -693,11 +875,19 @@ def main() -> None:
     homography = np.load(config["data"]["homography"])
     resolver = ModalityResolver(0.25)
     names = class_names(config["data"]["categories"])
+    if not 0.0 <= args.visualize_percent <= 100.0:
+        raise ValueError(f"--visualize-percent must be in [0, 100], got {args.visualize_percent}")
+
+    print(f"Found {len(image_result_files)} image_results.jsonl files under {capture_dir}")
+    records = load_records(image_result_files, args.limit)
+    selected_paths = build_visualization_selection(records, capture_dir, args.visualize_percent, args.visualize_group_level)
     saved = 0
 
     with torch.no_grad():
-        for record in iter_records(image_results, args.limit):
+        for record in records:
             visible_path = Path(record["image_path"])
+            if selected_paths is not None and str(visible_path) not in selected_paths:
+                continue
             timestamp = float(record["camera_t_bag"])
             paths = {name: resolver.resolve(visible_path, name, timestamp) for name in active_inputs}
             if any(path is None for path in paths.values()):
@@ -719,14 +909,13 @@ def main() -> None:
                 heatmap_threshold=args.heatmap_threshold,
                 heatmap_sigma_scale=args.heatmap_sigma_scale,
                 heatmap_colormap=args.heatmap_colormap,
-
-
+                heatmap_value_source=args.heatmap_value_source,
             )
             saved += 1
             if saved % 100 == 0:
                 print(f"saved {saved} images")
 
-    print(f"Done. Saved {saved} images to {output_dir}")
+    print(f"Done. Saved {saved} images to {output_dir} (visualize_percent={args.visualize_percent:.2f}, visualize_group_level={args.visualize_group_level})")
 
 
 if __name__ == "__main__":
